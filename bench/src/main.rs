@@ -1,5 +1,6 @@
-use std::time::Instant;
+use std::{thread, time::Duration};
 
+use bench::{BenchEventData, MainBenchRunner};
 use mpac_rs::{BlockingReceive, BlockingSend};
 
 /// ## Bench:
@@ -28,11 +29,30 @@ use mpac_rs::{BlockingReceive, BlockingSend};
 ///     - all receivers need to cooperate for each series and maintain a collection of sequenced values
 ///     - (1-1, 7-1, 1-7, 4-4, 7-7)
 fn main() {
-    let v1_results = run_bench(mpac_rs::v1::channel::<usize>());
+    run_bench(mpac_rs::v1::channel::<usize>());
 }
 
 fn run_bench<T, Sender: BlockingSend<T>, Receiver: BlockingReceive<T>>(
     (tx, rx): (Sender, Receiver),
 ) {
-    let start = Instant::now();
+    let main_runner = MainBenchRunner::new();
+
+    let mut handles = vec![];
+    for i in 0..100 {
+        let mut runner = main_runner.spawn_runner(format!("runner_{}", i));
+        let handle = thread::spawn(move || {
+            runner.record(BenchEventData::TestEvent { data: i * i * i });
+            thread::sleep(Duration::from_secs(3));
+            runner.record(BenchEventData::TestEvent {
+                data: i * i * i * i,
+            });
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    main_runner.write_results_to_file("results/benchmark_results.json");
 }
