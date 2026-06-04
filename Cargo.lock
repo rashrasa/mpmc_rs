@@ -3,5 +3,12 @@
 version = 4
 
 [[package]]
+name = "bench"
+version = "0.1.0"
+dependencies = [
+ "mpac_rs",
+]
+
+[[package]]
 name = "mpac_rs"
 version = "0.1.0"

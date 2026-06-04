@@ -5,6 +5,8 @@ use std::{
     time::Duration,
 };
 
+use crate::{ChannelReceive, ChannelSend, RecvError, SendError};
+
 #[derive(Debug)]
 pub struct Sender<T> {
     inner: Arc<Mutex<ChannelInner<T>>>,
@@ -22,19 +24,8 @@ struct ChannelInner<T> {
     queue: Vec<T>,
 }
 
-#[derive(Debug)]
-pub enum SendError<T> {
-    Closed,
-    PoisonError(T),
-}
-#[derive(Debug)]
-pub enum RecvError {
-    Closed,
-    PoisonError,
-}
-
-impl<T> Receiver<T> {
-    pub fn recv(&mut self) -> Result<T, RecvError> {
+impl<T> ChannelReceive<T> for Receiver<T> {
+    fn recv(&self) -> Result<T, RecvError> {
         loop {
             match self.inner.lock() {
                 Ok(mut inner) => {
@@ -56,18 +47,18 @@ impl<T> Receiver<T> {
     }
 }
 
-impl<T> Sender<T> {
-    pub fn send(&mut self, data: T) -> Result<(), SendError<T>> {
-        match self.inner.lock() {
-            Ok(mut v) => {
-                if v.receivers < 1 {
-                    return Err(SendError::Closed);
-                } else {
-                    v.queue.push(data);
-                    return Ok(());
-                }
-            }
-            Err(_) => Err(SendError::PoisonError(data)),
+impl<T> ChannelSend<T> for Sender<T> {
+    fn send(&self, data: T) -> Result<(), SendError<T>> {
+        let mut v = match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(err) => err.into_inner(),
+        };
+
+        if v.receivers < 1 {
+            return Err(SendError::Closed(data));
+        } else {
+            v.queue.push(data);
+            return Ok(());
         }
     }
 }
@@ -124,7 +115,7 @@ mod tests {
         let tx_handles = (0..20).map(move |_| {
             let tx_thread = tx.clone();
             std::thread::spawn(move || {
-                let mut tx = tx_thread;
+                let tx = tx_thread;
                 tx.send(1000).unwrap();
             })
         });
@@ -132,7 +123,7 @@ mod tests {
         let rx_handles = (0..10).map(move |_| {
             let rx_thread = rx.clone();
             std::thread::spawn(move || {
-                let mut rx = rx_thread;
+                let rx = rx_thread;
                 let mut counter = 0;
                 while let Ok(v) = rx.recv() {
                     counter += v;
