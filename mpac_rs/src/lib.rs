@@ -8,11 +8,17 @@ pub enum RecvError {
     Closed,
 }
 
-pub trait ChannelSend<T> {
+pub trait BlockingSend<T>
+where
+    Self: Clone,
+{
     fn send(&self, data: T) -> Result<(), SendError<T>>;
 }
 
-pub trait ChannelReceive<T> {
+pub trait BlockingReceive<T>
+where
+    Self: Clone,
+{
     fn recv(&self) -> Result<T, RecvError>;
 }
 

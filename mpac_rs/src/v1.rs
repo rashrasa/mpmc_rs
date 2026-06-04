@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use crate::{ChannelReceive, ChannelSend, RecvError, SendError};
+use crate::{BlockingReceive, BlockingSend, RecvError, SendError};
 
 #[derive(Debug)]
 pub struct Sender<T> {
@@ -24,7 +24,7 @@ struct ChannelInner<T> {
     queue: Vec<T>,
 }
 
-impl<T> ChannelReceive<T> for Receiver<T> {
+impl<T> BlockingReceive<T> for Receiver<T> {
     fn recv(&self) -> Result<T, RecvError> {
         loop {
             match self.inner.lock() {
@@ -47,7 +47,7 @@ impl<T> ChannelReceive<T> for Receiver<T> {
     }
 }
 
-impl<T> ChannelSend<T> for Sender<T> {
+impl<T> BlockingSend<T> for Sender<T> {
     fn send(&self, data: T) -> Result<(), SendError<T>> {
         let mut v = match self.inner.lock() {
             Ok(guard) => guard,
