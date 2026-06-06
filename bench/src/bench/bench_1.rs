@@ -2,7 +2,7 @@ use std::{collections::HashMap, thread, time::Instant};
 
 use mpac_rs::{BlockingReceive, BlockingSend, ChannelMaker};
 
-use crate::{BenchEventData, BenchRunner};
+use crate::runner::{BenchEventData, BenchRunner};
 
 #[derive(Clone)]
 pub struct Config {

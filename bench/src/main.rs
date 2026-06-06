@@ -1,8 +1,8 @@
 use std::time::Instant;
 
 use bench::{
-    MainBenchRunner,
     bench::bench_1::{self, run_bench_1},
+    runner::MainBenchRunner,
 };
 use log::info;
 
