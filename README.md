@@ -8,3 +8,77 @@ Multiple implementations of a concurrent queue using a channel-like API. Multipl
 
 Implemented as a `Vec`, with sender/receiver count management through `Drop` and `Clone`, safe access through a single `Mutex` and shared with `Arc`. Receivers busy-wait (with `sleep`) until there is an item in the queue, or the queue is empty and the sender count is 0. Senders add to the queue if the receiver count is >0.
 
+## Benchmark
+
+### Benchmark Simulation
+
+#### Test 1
+
+- state: similar/equal to the one in commit `f1516e60c26132f1ace5c772df7b68d71804a11f`
+- receivers run until queue is empty
+- **run 1** involves 7-1 senders-receivers, **run 2** with 1-7
+
+### Benchmark Versions
+
+#### Original (`f1516e60c26132f1ace5c772df7b68d71804a11f`)
+
+- Needed some modifications to allow configuration
+
+- Ran for: `83.7 s`
+- Output size: `549 MB`
+- Files: `1`
+- Avg. \# of Events (with Senders alive for 5 seconds): `~2,487,926` (runs had [`2,516,786`, `2,570,552`, `2,501,010`, `2,521,348`, `2,329,936`])
+- \# of Events (with 100k events per Sender): `1,600,036`
+- Benchmark overhead (search `BenchRunner`) is `~3.0%` of flamegraph cpu samples
+- Benchmark event recording overhead (search `BenchRunner::record`) is `~0.2% or ~170ms` of flamegraph cpu samples
+
+##### Flamegraph
+
+Mostly operations from `mpac_rs`, overhead from benchmark around 
+
+![](bench/docs/assets/flamegraph_pre_opt.svg)
+
+
+#### Improvement 1 (`4ac7a395f332240c087cc34e66699646f1588d3e`)
+
+- Ran for: `29.9 s`
+- Output size: `133 MB`
+- Files: `20`
+- Avg. \# of Events (with Senders alive for 5 seconds): `~2,023,108` (runs had [`2,002,930`, `2,011,140`, `2,022,838`, `2,033,416`, `2,045,218`])
+- \# of Events (with 100k events per Sender): `1,600,036`
+- Benchmark overhead (search `BenchRunner`) is `~4.0%` of flamegraph cpu samples
+- Benchmark event recording overhead (search `BenchRunner::record`) is `~0.7% or 209ms` of flamegraph cpu samples
+
+- **Noteworthy**: `Instant::now` sample % went from `~0.1%` to now `~0.5%`, which could explain the reduction in # of events and rise in overhead.
+
+##### Flamegraph
+
+Mostly operations from `mpac_rs`, overhead from benchmark around 
+
+![](bench/docs/assets/flamegraph_opt_1.svg)
+
+### Optimizations
+
+#### Easy Wins
+
+- Stopped cloning events, made event struct serializable to avoid conversions
+- Writing event data to runner-unique file on `Drop` instead of aggregating them in a "main" runner and writing to one file
+- Avoided pretty write
+
+#### Serde
+
+- Used `serde` attribute macros to minify serialization output including:
+    - `#[serde(flatten)]`
+    - `#[serde(rename = "_extremely_short_name")]`
+
+- Used `serde_repr` to minify enums to `u8`s
+
+- Keeping `serde_json::to_vec` with `File::write_all` turned out to be faster than switching to `serde_json::to_writer` and passing in a `File`, could be due to less syscalls
+
+
+### Regressions
+
+#### Additional Overhead
+
+Instead of storing `Instant`s in events, now storing elapsed seconds from the runner's start time as `f64`. This results in an Instant::now call for each event, which explains the rise in `BenchRunner::record`'s proportion of CPU time increasing. This was originally done to reduce the amount of cloning done when a runner exits and writes to value, but is now being reconsidered.
+
