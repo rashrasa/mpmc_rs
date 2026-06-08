@@ -8,7 +8,7 @@ Multiple implementations of a concurrent queue using a channel-like API. Multipl
 
 Implemented as a `Vec`, with sender/receiver count management through `Drop` and `Clone`, safe access through a single `Mutex` and shared with `Arc`. Receivers busy-wait (with `sleep`) until there is an item in the queue, or the queue is empty and the sender count is 0. Senders add to the queue if the receiver count is >0.
 
-## Benchmark
+## (WIP) Benchmark
 
 ### Benchmark Simulation
 
@@ -16,7 +16,8 @@ Implemented as a `Vec`, with sender/receiver count management through `Drop` and
 
 - state: similar/equal to the one in commit `f1516e60c26132f1ace5c772df7b68d71804a11f`
 - receivers run until queue is empty
-- **run 1** involves 7-1 senders-receivers, **run 2** with 1-7
+- **run 1** involves 7-1 senders(TTL 5s)-receivers, **run 2** with 1-7
+- **run 3** involves 7-1 senders(# requests 100k)-receivers, **run 4** with 1-7
 
 ### Benchmark Versions
 

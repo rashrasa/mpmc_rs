@@ -1,3 +1,6 @@
+#![feature(test)]
+#![allow(unused_features)]
+
 use std::time::Instant;
 
 use bench::{
@@ -43,34 +46,34 @@ fn main() {
         Box::new(mpac_rs::v1::V1Maker),
         vec![
             (
-                "1_tx-7_rx_ttl_5",
+                "3_tx-1_rx_ttl_5",
                 bench_1::Config {
-                    n_senders: 7,
+                    n_senders: 3,
                     n_receivers: 1,
-                    sender_config: bench_1::SenderConfig::TimeToLiveSeconds(5.0),
+                    sender_config: bench_1::SenderConfig::TimeToLiveSeconds(1.0),
                 },
             ),
             (
-                "7_tx-1_rx_ttl_5",
+                "1_tx-3_rx_ttl_5",
                 bench_1::Config {
                     n_senders: 1,
-                    n_receivers: 7,
-                    sender_config: bench_1::SenderConfig::TimeToLiveSeconds(5.0),
+                    n_receivers: 3,
+                    sender_config: bench_1::SenderConfig::TimeToLiveSeconds(1.0),
                 },
             ),
             (
-                "1_tx-7_rx_nor_100k",
+                "3_tx-1_rx_nor_100k",
                 bench_1::Config {
-                    n_senders: 7,
+                    n_senders: 3,
                     n_receivers: 1,
                     sender_config: bench_1::SenderConfig::NumberOfRequests(100_000),
                 },
             ),
             (
-                "7_tx-1_rx_nor_100k",
+                "1_tx-3_rx_nor_100k",
                 bench_1::Config {
                     n_senders: 1,
-                    n_receivers: 7,
+                    n_receivers: 3,
                     sender_config: bench_1::SenderConfig::NumberOfRequests(100_000),
                 },
             ),
@@ -94,4 +97,52 @@ fn main() {
         "Benchmarks completed. Ran for {}",
         start.elapsed().as_secs_f64()
     );
+}
+
+#[cfg(test)]
+mod tests {
+
+    extern crate test;
+    use fast_time::Clock;
+    use std::time::{Instant, SystemTime};
+    use test::Bencher;
+
+    #[bench]
+    fn bench_instant_now(bencher: &mut Bencher) {
+        bencher.iter(|| Instant::now());
+    }
+
+    #[bench]
+    fn bench_instant_elapsed_f64(bencher: &mut Bencher) {
+        let now = Instant::now();
+
+        bencher.iter(|| now.elapsed().as_secs_f64());
+    }
+
+    #[bench]
+    fn bench_system_time_now(bencher: &mut Bencher) {
+        bencher.iter(|| SystemTime::now());
+    }
+
+    #[bench]
+    fn bench_system_time_elapsed_f64(bencher: &mut Bencher) {
+        let now = SystemTime::now();
+
+        bencher.iter(|| now.elapsed().unwrap().as_secs_f64());
+    }
+
+    #[bench]
+    fn bench_fast_time_now(bencher: &mut Bencher) {
+        let mut clock = Clock::new();
+
+        bencher.iter(|| clock.now());
+    }
+
+    #[bench]
+    fn bench_fast_time_elapsed_f64(bencher: &mut Bencher) {
+        let mut clock = Clock::new();
+        let now = clock.now();
+
+        bencher.iter(|| now.elapsed(&mut clock).as_secs_f64());
+    }
 }

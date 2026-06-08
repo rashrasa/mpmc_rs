@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 env_logger = "0.11.10"
+fast_time = "0.1.23"
 log = "0.4.32"
 mpac_rs = { path = "../mpac_rs", features = ["bench"] }
 serde = { version = "1.0.228", features = ["derive"] }
