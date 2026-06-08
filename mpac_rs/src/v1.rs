@@ -1,9 +1,6 @@
 // Extremely naive solution using a Vec, Mutex, and busy-waiting.
 
-use std::{
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::sync::{Arc, Mutex};
 
 use log::{debug, error};
 
