@@ -2,6 +2,7 @@
 #![allow(unused_features)]
 
 // TODO: potentially instantiate logs with an extremely high capacity
+pub mod aggregate;
 pub mod bench;
 pub mod completion;
 pub mod runner;

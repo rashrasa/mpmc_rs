@@ -110,6 +110,8 @@ impl BenchRunner {
             dst = dst.join(split);
             last = split;
         }
+        dst.pop();
+
         let last = last.to_owned() + ".bin";
 
         create_dir_all(&dst)?;
