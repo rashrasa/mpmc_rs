@@ -124,7 +124,12 @@ impl LazyWindowedMetric {
             time >= self.start && time <= self.end,
             "time not in range [start, end]",
         );
-        let bucket = ((time - self.start) / self.period).floor() as usize;
+        let bucket = if time == self.end {
+            // only the end range of the end bucket is inclusive
+            self.n_buckets - 1
+        } else {
+            ((time - self.start) / self.period).floor() as usize
+        };
 
         let dst_i = match self
             .buckets

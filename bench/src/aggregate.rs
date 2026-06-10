@@ -56,9 +56,10 @@ pub enum ReconstructedEvent {
 
 impl Aggregation {
     /// expects directory to include tx_runner_n and rx_runner_n files
-    pub fn from_directory(run_path: impl AsRef<Path>) -> anyhow::Result<Aggregation> {
-        let aggregation_period_s = 0.25;
-
+    pub fn from_directory(
+        run_path: impl AsRef<Path>,
+        aggregation_period_s: f64,
+    ) -> anyhow::Result<Aggregation> {
         let mut constructed_events: HashMap<u64, ReconstructedEvent> = HashMap::new();
 
         let mut runner_starts = vec![];

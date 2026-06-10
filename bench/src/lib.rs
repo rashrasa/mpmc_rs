@@ -1,5 +1,4 @@
-#![feature(test)]
-#![allow(unused_features)]
+#![cfg_attr(test, feature(test))]
 
 // TODO: potentially instantiate logs with an extremely high capacity
 pub mod aggregate;
@@ -11,10 +10,10 @@ const RUNNER_WRITER_BUFFER_SIZE: usize = 64 * 1024;
 
 #[cfg(test)]
 mod tests {
-
-    extern crate test;
     use fast_time::Clock;
     use std::time::{Duration, Instant, SystemTime};
+
+    extern crate test;
     use test::Bencher;
 
     #[bench]
