@@ -1,3 +1,5 @@
+pub mod metric;
+
 use std::{
     collections::{
         HashMap,
@@ -10,7 +12,10 @@ use std::{
 
 use anyhow::Context;
 
-use crate::aggregate::ReconstructedEvent::{PartialReceiverEvent, PartialSenderEvent};
+use crate::aggregate::{
+    ReconstructedEvent::{PartialReceiverEvent, PartialSenderEvent},
+    metric::{LazyWindowedMetric, Metric},
+};
 
 pub struct Aggregation {
     pub aggregation_period_s: f64,
@@ -21,139 +26,6 @@ pub struct Aggregation {
     pub data_latency: Vec<Metric>,
 
     pub throughput: Vec<Metric>,
-}
-
-struct LazyWindowedMetric {
-    n_buckets: usize,
-    period: f64,
-    start: f64,
-    end: f64,
-    buckets: Vec<LazyWindowedMetricBucket>,
-}
-
-#[derive(Clone)]
-struct LazyWindowedMetricBucket {
-    start: f64,
-    end: f64,
-    sorted_values: Vec<f64>,
-}
-
-impl LazyWindowedMetric {
-    pub fn new(period: f64, start: f64, end: f64) -> Self {
-        let n = ((end - start) / period).ceil() as usize;
-        Self {
-            period,
-            n_buckets: n,
-            start,
-            end,
-            buckets: vec![
-                LazyWindowedMetricBucket {
-                    start: start,
-                    end: end,
-                    sorted_values: vec![]
-                };
-                n
-            ],
-        }
-    }
-
-    pub fn add(&mut self, value: f64, time: f64) -> anyhow::Result<()> {
-        let bucket = ((time - self.start) / self.period).floor() as usize;
-
-        let dst_i = match self
-            .buckets
-            .get(bucket)
-            .ok_or(anyhow::Error::msg(format!(
-                "index {bucket} out of range. bucket count: {}",
-                self.n_buckets
-            )))?
-            .sorted_values
-            .binary_search_by(|a| a.total_cmp(&value))
-        {
-            Ok(i) => i,
-            Err(i) => i,
-        };
-        self.buckets[bucket].sorted_values.insert(dst_i, value);
-        Ok(())
-    }
-
-    pub fn generate(&self) -> anyhow::Result<Vec<Metric>> {
-        let mut result = vec![];
-        for bucket in &self.buckets {
-            if bucket.sorted_values.len() == 0 {
-                result.push(Metric {
-                    min: f64::NAN,
-                    max: f64::NAN,
-                    mean: f64::NAN,
-                    std_dev: f64::NAN,
-                    p50: f64::NAN,
-                    p90: f64::NAN,
-                    p95: f64::NAN,
-                    p99: f64::NAN,
-                    p999: f64::NAN,
-                });
-                continue;
-            }
-            let mut min = f64::INFINITY;
-            let mut max = -f64::INFINITY;
-
-            let res = std_dev::standard_deviation(&bucket.sorted_values);
-
-            let mean = res.mean;
-            let std_dev = res.standard_deviation;
-
-            for v in bucket.sorted_values.iter() {
-                min = min.min(*v);
-                max = max.max(*v);
-            }
-
-            result.push(Metric {
-                min,
-                max,
-                mean,
-                std_dev,
-                p50: percentile(&bucket.sorted_values, 0.5).context("failed to calculate p50")?,
-                p90: percentile(&bucket.sorted_values, 0.9).context("failed to calculate p90")?,
-                p95: percentile(&bucket.sorted_values, 0.95).context("failed to calculate p95")?,
-                p99: percentile(&bucket.sorted_values, 0.99).context("failed to calculate p99")?,
-                p999: percentile(&bucket.sorted_values, 0.999)
-                    .context("failed to calculate p999")?,
-            });
-        }
-        Ok(result)
-    }
-}
-
-fn percentile(sorted_values: &Vec<f64>, p: f64) -> anyhow::Result<f64> {
-    assert!(
-        p >= 0.0 && p <= 1.0,
-        "percentile only accepts p in range [0.0, 1.0]"
-    );
-
-    let n = sorted_values.len();
-
-    let target = p * n as f64;
-    let low = target.floor();
-    let high = target.ceil();
-    let weight = target - low;
-    let low_idx = low as usize;
-
-    let low_val = sorted_values
-        .get(low_idx)
-        .ok_or(anyhow::Error::msg(format!(
-            "index {} out of bounds. length: {}",
-            low_idx, n
-        )))?;
-
-    let high_idx = (high as usize).min(n - 1);
-    let high_val = sorted_values
-        .get(high_idx)
-        .ok_or(anyhow::Error::msg(format!(
-            "index {} out of bounds. length: {}",
-            high_idx, n
-        )))?;
-
-    Ok(low_val * weight + high_val * (1.0 - weight))
 }
 
 pub enum ReconstructedEvent {
@@ -179,7 +51,7 @@ pub enum ReconstructedEvent {
 impl Aggregation {
     /// expects directory to include tx_runner_n and rx_runner_n files
     pub fn from_directory(run_path: &'static str) -> anyhow::Result<Aggregation> {
-        let aggregation_period_ms = 250.0;
+        let aggregation_period_ms = 2500.0;
 
         let mut constructed_events: HashMap<u64, ReconstructedEvent> = HashMap::new();
 
@@ -331,7 +203,7 @@ impl Aggregation {
 
         Ok(Aggregation {
             aggregation_period_s: aggregation_period_ms / 1000.0,
-            n_windows: lazy_send_delay.n_buckets,
+            n_windows: lazy_send_delay.n_buckets(),
             send_delay: lazy_send_delay
                 .generate()
                 .context("failed to generate aggregation for send delay metric")?,
@@ -414,16 +286,4 @@ fn next_binary_row(mut r: impl Read) -> std::io::Result<(f64, f64, u64)> {
                 .expect("conversion failed"),
         ),
     ))
-}
-
-pub struct Metric {
-    pub min: f64,
-    pub max: f64,
-    pub mean: f64,
-    pub std_dev: f64,
-    pub p50: f64,
-    pub p90: f64,
-    pub p95: f64,
-    pub p99: f64,
-    pub p999: f64,
 }

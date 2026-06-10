@@ -98,6 +98,7 @@ name = "bench"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "approx",
  "env_logger",
  "fast_time",
  "log",

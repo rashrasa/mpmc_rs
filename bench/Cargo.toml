@@ -21,3 +21,6 @@ path = "bin/benchmark.rs"
 [[bin]]
 name = "aggregate"
 path = "bin/aggregate.rs"
+
+[dev-dependencies]
+approx = "0.5.1"
