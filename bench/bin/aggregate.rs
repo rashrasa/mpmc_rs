@@ -83,7 +83,7 @@ fn main() -> anyhow::Result<()> {
                         aggregation: agg,
                     };
 
-                    file.write_all(&serde_json::to_vec_pretty(&result)?)?;
+                    file.write_all(&serde_json::to_vec(&result)?)?;
 
                     info!("wrote result to {}", save_to.to_str().unwrap());
                 }

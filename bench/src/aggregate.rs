@@ -24,6 +24,8 @@ pub struct Aggregation {
     pub start: f64,
     pub end: f64,
 
+    pub sorted_backpressure_values: Vec<(f64, u64)>,
+
     pub aggregation_period_s: f64,
     pub n_windows: usize,
     pub send_delay: Vec<DistributionMetric>,
@@ -39,11 +41,15 @@ pub enum ReconstructedEvent {
         id: u64,
         start_tx_s: f64,
         end_tx_s: f64,
+
+        backpressure_end: u64,
     },
     PartialReceiverEvent {
         id: u64,
         start_rx_s: f64,
         end_rx_s: f64,
+
+        backpressure_end: u64,
     },
     ReconstructedEvent {
         id: u64,
@@ -51,6 +57,9 @@ pub enum ReconstructedEvent {
         end_tx_s: f64,
         start_rx_s: f64,
         end_rx_s: f64,
+
+        backpressure_tx_end: u64,
+        backpressure_rx_end: u64,
     },
 }
 
@@ -78,76 +87,88 @@ impl Aggregation {
 
             let mut file = BufReader::new(File::open(entry.path())?);
 
-            let (runner_start, runner_end, _) = next_binary_row(&mut file)?;
+            let (runner_start, runner_end, _, _) = next_binary_row(&mut file)?;
 
             runner_starts.push(runner_start);
             runner_ends.push(runner_end);
 
             loop {
                 match next_binary_row(&mut file) {
-                    Ok((event_start, event_end, id)) => match constructed_events.entry(id) {
-                        Occupied(mut e) => {
-                            let v = e.get_mut();
-                            match v {
-                                PartialReceiverEvent {
-                                    id,
-                                    start_rx_s,
-                                    end_rx_s,
-                                } => {
-                                    if is_tx {
-                                        *v = ReconstructedEvent::ReconstructedEvent {
-                                            id: *id,
-                                            start_tx_s: event_start,
-                                            end_tx_s: event_end,
-                                            start_rx_s: *start_rx_s,
-                                            end_rx_s: *end_rx_s,
+                    Ok((event_start, event_end, event_id, event_backpressure)) => {
+                        match constructed_events.entry(event_id) {
+                            Occupied(mut e) => {
+                                let v = e.get_mut();
+                                match v {
+                                    PartialReceiverEvent {
+                                        id,
+                                        start_rx_s,
+                                        end_rx_s,
+                                        backpressure_end,
+                                    } => {
+                                        if is_tx {
+                                            *v = ReconstructedEvent::ReconstructedEvent {
+                                                id: *id,
+                                                start_tx_s: event_start,
+                                                end_tx_s: event_end,
+                                                start_rx_s: *start_rx_s,
+                                                end_rx_s: *end_rx_s,
+
+                                                backpressure_rx_end: *backpressure_end,
+                                                backpressure_tx_end: event_backpressure,
+                                            }
+                                        } else {
+                                            return Err(anyhow::Error::msg(format!(
+                                                "id {id} already has a PartialReceiverEvent"
+                                            )));
                                         }
-                                    } else {
-                                        return Err(anyhow::Error::msg(format!(
-                                            "id {id} already has a PartialReceiverEvent"
-                                        )));
                                     }
-                                }
-                                PartialSenderEvent {
-                                    id,
-                                    start_tx_s,
-                                    end_tx_s,
-                                } => {
-                                    if !is_tx {
-                                        *v = ReconstructedEvent::ReconstructedEvent {
-                                            id: *id,
-                                            start_tx_s: *start_tx_s,
-                                            end_tx_s: *end_tx_s,
-                                            start_rx_s: event_start,
-                                            end_rx_s: event_end,
+                                    PartialSenderEvent {
+                                        id,
+                                        start_tx_s,
+                                        end_tx_s,
+                                        backpressure_end,
+                                    } => {
+                                        if !is_tx {
+                                            *v = ReconstructedEvent::ReconstructedEvent {
+                                                id: *id,
+                                                start_tx_s: *start_tx_s,
+                                                end_tx_s: *end_tx_s,
+                                                start_rx_s: event_start,
+                                                end_rx_s: event_end,
+
+                                                backpressure_tx_end: *backpressure_end,
+                                                backpressure_rx_end: event_backpressure,
+                                            }
+                                        } else {
+                                            return Err(anyhow::Error::msg(format!(
+                                                "id {id} already has a PartialSenderEvent"
+                                            )));
                                         }
-                                    } else {
-                                        return Err(anyhow::Error::msg(format!(
-                                            "id {id} already has a PartialSenderEvent"
-                                        )));
                                     }
+                                    ReconstructedEvent::ReconstructedEvent { .. } => {
+                                        unreachable!()
+                                    }
+                                };
+                            }
+                            Vacant(e) => {
+                                if is_tx {
+                                    e.insert_entry(PartialSenderEvent {
+                                        start_tx_s: event_start,
+                                        end_tx_s: event_end,
+                                        id: event_id,
+                                        backpressure_end: event_backpressure,
+                                    });
+                                } else {
+                                    e.insert_entry(PartialReceiverEvent {
+                                        start_rx_s: event_start,
+                                        end_rx_s: event_end,
+                                        id: event_id,
+                                        backpressure_end: event_backpressure,
+                                    });
                                 }
-                                ReconstructedEvent::ReconstructedEvent { .. } => {
-                                    unreachable!()
-                                }
-                            };
-                        }
-                        Vacant(e) => {
-                            if is_tx {
-                                e.insert_entry(PartialSenderEvent {
-                                    start_tx_s: event_start,
-                                    end_tx_s: event_end,
-                                    id: id,
-                                });
-                            } else {
-                                e.insert_entry(PartialReceiverEvent {
-                                    start_rx_s: event_start,
-                                    end_rx_s: event_end,
-                                    id: id,
-                                });
                             }
                         }
-                    },
+                    }
 
                     Err(err) => match err.kind() {
                         UnexpectedEof => {
@@ -174,21 +195,27 @@ impl Aggregation {
 
         let mut lazy_throughput = LazyWindowedMetric::new(aggregation_period_s, start_s, end_s);
 
+        let mut backpressure = vec![];
+
         for (_, event) in constructed_events {
             match event {
                 PartialSenderEvent {
                     id: _,
                     start_tx_s,
                     end_tx_s,
+                    backpressure_end,
                 } => {
                     lazy_send_delay.add(end_tx_s - start_tx_s, start_tx_s)?;
+                    backpressure.push((end_tx_s, backpressure_end));
                 }
                 PartialReceiverEvent {
                     id: _,
                     start_rx_s,
                     end_rx_s,
+                    backpressure_end,
                 } => {
                     lazy_recv_delay.add(end_rx_s - start_rx_s, start_rx_s)?;
+                    backpressure.push((end_rx_s, backpressure_end));
                 }
                 ReconstructedEvent::ReconstructedEvent {
                     id: _,
@@ -196,19 +223,28 @@ impl Aggregation {
                     end_tx_s,
                     start_rx_s,
                     end_rx_s,
+                    backpressure_rx_end,
+                    backpressure_tx_end,
                 } => {
                     lazy_send_delay.add(end_tx_s - start_tx_s, start_tx_s)?;
                     lazy_recv_delay.add(end_rx_s - start_rx_s, start_rx_s)?;
 
                     lazy_latency.add(end_rx_s - start_tx_s, start_tx_s)?;
                     lazy_throughput.add(1.0, end_rx_s)?;
+
+                    backpressure.push((end_tx_s, backpressure_tx_end));
+                    backpressure.push((end_rx_s, backpressure_rx_end));
                 }
             }
         }
 
+        backpressure.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+
         Ok(Aggregation {
             start: start_s,
             end: end_s,
+
+            sorted_backpressure_values: backpressure,
 
             aggregation_period_s,
             n_windows: lazy_send_delay.n_buckets(),
@@ -248,8 +284,8 @@ impl Display for Aggregation {
     }
 }
 
-fn next_binary_row(mut r: impl Read) -> std::io::Result<(f64, f64, u64)> {
-    let mut header_buf = [0u8; 24];
+fn next_binary_row(mut r: impl Read) -> std::io::Result<(f64, f64, u64, u64)> {
+    let mut header_buf = [0u8; 32];
     r.read_exact(&mut header_buf)?;
     let mut chunks = header_buf.chunks_exact(8);
 
@@ -265,6 +301,13 @@ fn next_binary_row(mut r: impl Read) -> std::io::Result<(f64, f64, u64)> {
             chunks
                 .next()
                 .expect("chunks did not yield second element")
+                .try_into()
+                .expect("conversion failed"),
+        ),
+        u64::from_le_bytes(
+            chunks
+                .next()
+                .expect("chunks did not yield third element")
                 .try_into()
                 .expect("conversion failed"),
         ),

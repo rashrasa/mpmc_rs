@@ -1,11 +1,11 @@
 use std::{
-    sync::{Arc, Condvar, Mutex},
+    sync::{Arc, Barrier},
     thread,
 };
 
 use anyhow::Context;
 use fast_time::{Clock, Instant};
-use log::{debug, error, info};
+use log::{debug, error};
 use mpac_rs::{BlockingReceive, BlockingSend, ChannelMaker};
 
 use crate::runner::BenchRunner;
@@ -41,7 +41,7 @@ where
         ));
     }
 
-    let start_flag: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
+    let start_flag: Arc<Barrier> = Arc::new(Barrier::new(&config.n_receivers + &config.n_senders));
 
     let (tx, rx) = maker.channel();
 
@@ -66,42 +66,18 @@ where
         });
         handles.push(r_h);
     }
-
-    let len_fn: Box<dyn Fn() -> usize> = if config.sender_ttl_s.is_none() {
-        drop(tx);
-
-        Box::new(|| rx.len())
-    } else {
-        drop(rx);
-
-        Box::new(|| tx.len())
-    };
-
-    {
-        let (lock, cvar) = &*start_flag;
-        let mut started = lock.lock().unwrap();
-        debug!("Notifying all threads to start");
-        *started = true;
-        cvar.notify_all();
-    }
+    drop(tx);
+    drop(rx);
 
     for handle in handles {
         handle.join().unwrap();
     }
 
-    let len = len_fn();
-
-    if len > 0 {
-        info!(
-            "benchmark ended with {} elements remaining in the queue",
-            len
-        );
-    }
     Ok(())
 }
 
 fn sender_thread<T>(
-    start_flag: Arc<(Mutex<bool>, Condvar)>,
+    start_flag: Arc<Barrier>,
     config: Config<T>,
     mut tx: impl BlockingSend<Message<T>>,
     mut runner: BenchRunner,
@@ -109,13 +85,7 @@ fn sender_thread<T>(
 ) {
     let mut clock = runner.clock();
 
-    {
-        let (lock, cvar) = &*start_flag;
-        let mut started = lock.lock().unwrap();
-        while !*started {
-            started = cvar.wait(started).unwrap();
-        }
-    }
+    start_flag.wait();
 
     debug!("(Sender) Received start signal");
 
@@ -153,10 +123,11 @@ fn sender_work<T>(
     };
 
     let event = runner.start_event();
-    if let Err(_) = tx.send(message) {
+    if let Ok(len) = tx.b_send(message) {
+        event.finish(id, len as u64);
+    } else {
         return Err(anyhow::Error::msg("channel closed"));
     };
-    event.finish(id);
     Ok(())
 }
 
@@ -171,20 +142,14 @@ fn keep_sender_alive(ttl: &Option<f64>, start: &Instant, clock: &mut Clock) -> b
 }
 
 fn receiver_thread<T>(
-    start_flag: Arc<(Mutex<bool>, Condvar)>,
+    start_flag: Arc<Barrier>,
     config: Config<T>,
     mut rx: impl BlockingReceive<Message<T>>,
     mut runner: BenchRunner,
 ) {
     let mut clock = runner.clock();
 
-    {
-        let (lock, cvar) = &*start_flag;
-        let mut started = lock.lock().unwrap();
-        while !*started {
-            started = cvar.wait(started).unwrap();
-        }
-    }
+    start_flag.wait();
 
     debug!("(Receiver) Received start signal");
 
@@ -215,9 +180,9 @@ fn receiver_work<T>(
     runner: &mut BenchRunner,
 ) -> anyhow::Result<()> {
     let event_guard = runner.start_event();
-    match rx.recv() {
-        Ok(r) => {
-            event_guard.finish(r.id);
+    match rx.b_recv() {
+        Ok((r, len)) => {
+            event_guard.finish(r.id, len as u64);
             Ok(())
         }
         Err(_) => Err(anyhow::Error::msg("channel closed")),

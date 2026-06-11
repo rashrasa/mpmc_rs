@@ -73,7 +73,7 @@ impl BenchRunner {
         let mut clock = self.clock.clone();
         let start = clock.now();
         Self {
-            global_start: Arc::new(clock.now()),
+            global_start: self.global_start.clone(),
             id_bank: self.id_bank.clone(),
             clock: clock,
 
@@ -145,11 +145,12 @@ pub struct EventGuard<'a> {
 }
 
 impl<'a> EventGuard<'a> {
-    pub fn finish(self, id: u64) {
+    pub fn finish(self, id: u64, len: u64) {
         self.runner.log.push(BenchEvent {
             start: self.start,
             end: self.runner.clock.now(),
             id: id,
+            backpressure: len,
         })
     }
 }
@@ -159,6 +160,7 @@ pub struct BenchEvent {
     pub start: Instant,
     pub end: Instant,
     pub id: u64,
+    pub backpressure: u64,
 }
 
 fn write_all_bench_log(
@@ -172,12 +174,13 @@ fn write_all_bench_log(
     // file layout (little-endian):
     // 8 bytes start_t_secs f64
     // 8 bytes end_t_ms secs f64
-    // 8 bytes padding (for hex viewers)
+    // 16 bytes padding (for hex viewers)
     //
     // for each row:
     //  8 bytes start_t_secs f64
     //  8 bytes end_t_secs f64
     //  8 bytes id u64
+    //  8 bytes backpressure u64
 
     writer
         .write(
@@ -196,6 +199,10 @@ fn write_all_bench_log(
                 .to_le_bytes(),
         )
         .context("failed to write runner_end")?;
+
+    writer
+        .write(&0u64.to_le_bytes())
+        .context("failed to write padding bytes")?;
 
     writer
         .write(&0u64.to_le_bytes())
@@ -222,6 +229,9 @@ fn write_all_bench_log(
 
         writer
             .write(&row.id.to_le_bytes())
+            .context("failed to write row_id")?;
+        writer
+            .write(&row.backpressure.to_le_bytes())
             .context("failed to write row_id")?;
     }
 

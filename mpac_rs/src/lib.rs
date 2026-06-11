@@ -3,25 +3,41 @@ pub enum SendError<T> {
     Closed(T),
 }
 
+#[cfg(feature = "bench")]
+#[derive(Debug)]
+pub enum BSendError<T> {
+    Closed((T, usize)),
+}
+
 #[derive(Debug)]
 pub enum RecvError {
     Closed,
+}
+
+#[cfg(feature = "bench")]
+#[derive(Debug)]
+pub enum BRecvError {
+    Closed(usize),
 }
 
 pub trait BlockingSend<T>
 where
     Self: Clone,
 {
+    #[cfg(feature = "bench")]
+    fn b_send(&self, data: T) -> Result<usize, BSendError<T>>;
+
     fn send(&self, data: T) -> Result<(), SendError<T>>;
-    fn len(&self) -> usize;
 }
 
 pub trait BlockingReceive<T>
 where
     Self: Clone,
 {
+    #[cfg(feature = "bench")]
+    fn b_recv(&self) -> Result<(T, usize), BRecvError>;
+
     fn recv(&self) -> Result<T, RecvError>;
-    fn len(&self) -> usize;
 }
 
 #[cfg(feature = "bench")]

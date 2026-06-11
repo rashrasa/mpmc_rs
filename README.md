@@ -2,6 +2,14 @@
 
 Multiple implementations of a concurrent queue using a channel-like API. Multiple producers can push data to multiple consumers, with only one of them receiving any specific value.
 
+## Run
+
+`./run.sh bench aggregate plot` or `./run.sh` to run all stages
+
+exclude any arg to only run specified stages
+
+open `output/plots/*.html` to view plots
+
 ## Implementations
 
 ### Version 1

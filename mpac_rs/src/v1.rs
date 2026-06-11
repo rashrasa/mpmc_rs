@@ -48,16 +48,29 @@ impl<T> BlockingReceive<T> for Receiver<T> {
         }
     }
 
-    fn len(&self) -> usize {
-        let inner = match self.inner.lock() {
-            Ok(g) => g,
-            Err(err) => {
-                error!("Poison Error: {:?}", err);
-                err.into_inner()
+    #[cfg(feature = "bench")]
+    fn b_recv(&self) -> Result<(T, usize), crate::BRecvError> {
+        loop {
+            {
+                let mut inner = match self.inner.lock() {
+                    Ok(g) => g,
+                    Err(err) => {
+                        error!("Poison Error: {:?}", err);
+                        err.into_inner()
+                    }
+                };
+                let queue_len = inner.queue.len();
+                if queue_len > 0 {
+                    return Ok((inner.queue.remove(0), queue_len));
+                } else {
+                    // only check for 0 senders if queue is empty
+                    if inner.senders == 0 {
+                        return Err(crate::BRecvError::Closed(queue_len));
+                    }
+                    // Senders are still active but no messages are in the queue.
+                }
             }
-        };
-
-        inner.queue.len()
+        }
     }
 }
 
@@ -79,16 +92,22 @@ impl<T> BlockingSend<T> for Sender<T> {
         }
     }
 
-    fn len(&self) -> usize {
-        let inner = match self.inner.lock() {
-            Ok(g) => g,
+    #[cfg(feature = "bench")]
+    fn b_send(&self, data: T) -> Result<usize, crate::BSendError<T>> {
+        let mut inner = match self.inner.lock() {
+            Ok(guard) => guard,
             Err(err) => {
                 error!("Poison Error: {:?}", err);
                 err.into_inner()
             }
         };
 
-        inner.queue.len()
+        if inner.receivers == 0 {
+            return Err(crate::BSendError::Closed((data, inner.queue.len())));
+        } else {
+            inner.queue.push(data);
+            return Ok(inner.queue.len());
+        }
     }
 }
 
@@ -111,7 +130,10 @@ impl<T> Clone for Sender<T> {
 impl<T> Drop for Receiver<T> {
     fn drop(&mut self) {
         let mut locked = self.inner.lock().unwrap();
+
+        #[cfg(feature = "bench")]
         debug!("Receiver count: {}", locked.receivers - 1);
+
         locked.receivers -= 1;
     }
 }
@@ -119,7 +141,10 @@ impl<T> Drop for Receiver<T> {
 impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
         let mut locked = self.inner.lock().unwrap();
+
+        #[cfg(feature = "bench")]
         debug!("Sender count: {}", locked.senders - 1);
+
         locked.senders -= 1;
     }
 }
