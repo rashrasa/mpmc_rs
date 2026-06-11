@@ -16,6 +16,15 @@ open `output/plots/*.html` to view plots
 
 Implemented as a `Vec`, with sender/receiver count management through `Drop` and `Clone`, safe access through a single `Mutex` and shared with `Arc`. Receivers busy-wait (with `sleep`) until there is an item in the queue, or the queue is empty and the sender count is 0. Senders add to the queue if the receiver count is >0.
 
+### Version 2
+
+
+Same as version 1, but uses a VecDeque. Throughput in the millions and backpressure hangs around 1000 (check [bench/docs/assets/3_3_10_10_4.html](bench/docs/assets/3_3_10_10_4.html)). 
+
+V1 gets dwarfed in terms of throughput and backpressure:
+
+![](bench/docs/assets/3_3_throughput.png)
+
 ## (WIP) Benchmark
 
 ### Benchmark Simulation
