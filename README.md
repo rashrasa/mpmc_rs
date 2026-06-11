@@ -19,7 +19,9 @@ Implemented as a `Vec`, with sender/receiver count management through `Drop` and
 ### Version 2
 
 
-Same as version 1, but uses a VecDeque. Throughput in the millions and backpressure hangs around 1000 (check [bench/docs/assets/3_3_10_10_4.html](bench/docs/assets/3_3_10_10_4.html)). 
+Same as version 1, but uses a VecDeque. Basic optimization but results in significantly a significantly better channel.
+
+Throughput in the millions and backpressure hangs around 1000 (check [bench/docs/assets/3_3_10_10_4.html](bench/docs/assets/3_3_10_10_4.html)). 
 
 V1 gets dwarfed in terms of throughput and backpressure:
 
