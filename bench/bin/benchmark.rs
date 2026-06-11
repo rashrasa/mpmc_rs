@@ -8,6 +8,12 @@ use bench::{
     test::test_1::{self, run_bench_1},
 };
 use log::{error, info};
+use mpac_rs::{V2Maker, v1::V1Maker};
+
+enum Version {
+    V1(&'static str),
+    V2(&'static str),
+}
 
 /// ## Bench:
 ///
@@ -41,42 +47,40 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     // version names: tx_rx_sttl_rttl_size
-    let makers = vec![(
-        "v1_naive",
-        Box::new(mpac_rs::v1::V1Maker),
-        vec![
-            (
-                "3_3_10_10_4",
-                test_1::Config {
-                    n_senders: 3,
-                    n_receivers: 3,
-                    sender_ttl_s: Some(10.0),
-                    receiver_ttl_s: Some(10.0),
-                    make_payload: || 9u32,
-                },
-            ),
-            (
-                "1_3_10_10_4",
-                test_1::Config {
-                    n_senders: 1,
-                    n_receivers: 3,
-                    sender_ttl_s: Some(10.0),
-                    receiver_ttl_s: Some(10.0),
-                    make_payload: || 9u32,
-                },
-            ),
-            (
-                "3_1_10_10_4",
-                test_1::Config {
-                    n_senders: 3,
-                    n_receivers: 1,
-                    sender_ttl_s: Some(10.0),
-                    receiver_ttl_s: Some(10.0),
-                    make_payload: || 9u32,
-                },
-            ),
-        ],
-    )];
+    let configs = vec![vec![
+        (
+            "3_3_10_10_4",
+            test_1::Config {
+                n_senders: 3,
+                n_receivers: 3,
+                sender_ttl_s: Some(10.0),
+                receiver_ttl_s: Some(10.0),
+                make_payload: || 9u32,
+            },
+        ),
+        (
+            "1_3_10_10_4",
+            test_1::Config {
+                n_senders: 1,
+                n_receivers: 3,
+                sender_ttl_s: Some(10.0),
+                receiver_ttl_s: Some(10.0),
+                make_payload: || 9u32,
+            },
+        ),
+        (
+            "3_1_10_10_4",
+            test_1::Config {
+                n_senders: 3,
+                n_receivers: 1,
+                sender_ttl_s: Some(10.0),
+                receiver_ttl_s: Some(10.0),
+                make_payload: || 9u32,
+            },
+        ),
+    ]];
+
+    let version_descs = vec![Version::V1("v1_naive"), Version::V2("v2_vec_deque")];
 
     info!("Starting benchmark");
     let mut clock = Clock::new();
@@ -84,24 +88,36 @@ fn main() -> anyhow::Result<()> {
 
     let runner = MainBenchRunner::new(Path::new("output/result").to_path_buf());
 
-    for (version_desc, version, configs) in makers {
-        let runner = runner.spawn_runner(format!("version_{}", version_desc));
-        for (config_desc, config) in configs {
-            info!(
-                "Starting {} tests with profile {}",
-                version_desc, config_desc
-            );
-            let runner = runner.spawn_runner(format!("config_{}", config_desc));
-            run_bench_1(&runner, version.as_ref(), config).context("failed to run benchmark 1")?;
+    for v in &version_descs {
+        let version_desc = match v {
+            Version::V1(d) => d,
+            Version::V2(d) => d,
+        };
+        for configs in &configs {
+            let runner = runner.spawn_runner(format!("version_{}", version_desc));
+            for (config_desc, config) in configs {
+                info!(
+                    "Starting {} tests with profile {}",
+                    version_desc, config_desc
+                );
+                let runner = runner.spawn_runner(format!("config_{}", config_desc));
+                match v {
+                    Version::V1(_) => run_bench_1(&runner, &V1Maker, config.clone())
+                        .context("failed to run benchmark 1")?,
+                    Version::V2(_) => run_bench_1(&runner, &V2Maker, config.clone())
+                        .context("failed to run benchmark 1")?,
+                }
 
+                if let Err(err) = runner.complete_runner() {
+                    error!("{:?}", err);
+                }
+            }
             if let Err(err) = runner.complete_runner() {
                 error!("{:?}", err);
             }
         }
-        if let Err(err) = runner.complete_runner() {
-            error!("{:?}", err);
-        }
     }
+
     if let Err(err) = runner.complete_runner() {
         error!("{:?}", err);
     }

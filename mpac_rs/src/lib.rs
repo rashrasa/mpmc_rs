@@ -22,7 +22,7 @@ pub enum BRecvError {
 
 pub trait BlockingSend<T>
 where
-    Self: Clone,
+    Self: Clone + Send,
 {
     #[cfg(feature = "bench")]
     fn b_send(&self, data: T) -> Result<usize, BSendError<T>>;
@@ -42,9 +42,15 @@ where
 
 #[cfg(feature = "bench")]
 pub trait ChannelMaker {
-    fn channel<T>(&self) -> (Sender<T>, Receiver<T>)
+    fn channel<T>(
+        &self,
+    ) -> (
+        impl BlockingSend<T> + Send + 'static,
+        impl BlockingReceive<T> + Send + 'static,
+    )
     where
-        Self: Sized;
+        Self: Sized,
+        T: Send + 'static;
 }
 
 #[cfg(not(feature = "bench"))]
@@ -55,3 +61,12 @@ pub mod v1;
 
 #[cfg(feature = "v1")]
 pub use v1::*;
+
+#[cfg(not(feature = "bench"))]
+mod v2;
+
+#[cfg(feature = "bench")]
+pub mod v2;
+
+#[cfg(feature = "v2")]
+pub use v2::*;

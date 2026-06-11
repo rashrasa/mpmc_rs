@@ -41,7 +41,8 @@ where
         ));
     }
 
-    let start_flag: Arc<Barrier> = Arc::new(Barrier::new(&config.n_receivers + &config.n_senders));
+    let start_flag: Arc<Barrier> =
+        Arc::new(Barrier::new(config.n_receivers + config.n_senders + 1));
 
     let (tx, rx) = maker.channel();
 
@@ -68,6 +69,8 @@ where
     }
     drop(tx);
     drop(rx);
+
+    start_flag.wait();
 
     for handle in handles {
         handle.join().unwrap();

@@ -34,7 +34,6 @@ for config, series in grouped.items():
         rows=len(series),
         cols=1,
         subplot_titles=[version for version,_,_ in series],
-        shared_xaxes=True,
         specs = [[{"secondary_y":True}] for _ in series]
     )
     for i, (version, buckets, bp_values) in enumerate(series):
@@ -89,6 +88,7 @@ for config, series in grouped.items():
     fig.update_layout(
         title=f"Throughput vs Time, {config}",
         hovermode="x unified",
+        height=500 * len(series),
     )
     for i in range(1, len(series) + 1):
         fig.update_layout({

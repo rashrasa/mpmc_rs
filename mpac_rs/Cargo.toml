@@ -7,8 +7,9 @@ edition = "2024"
 log = "0.4.32"
 
 [features]
-default = ["v1"]
+default = ["v2"]
 
 v1 = []
+v2 = []
 
 bench = []

@@ -1,6 +1,9 @@
-// Extremely naive solution using a Vec, Mutex, and busy-waiting.
+// Exactly the same as v1, except it uses a VecDeque
 
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
 
 use log::{debug, error};
 
@@ -20,7 +23,7 @@ pub struct Receiver<T> {
 struct ChannelInner<T> {
     senders: usize,
     receivers: usize,
-    queue: Vec<T>,
+    queue: VecDeque<T>,
 }
 
 impl<T> BlockingReceive<T> for Receiver<T> {
@@ -36,7 +39,7 @@ impl<T> BlockingReceive<T> for Receiver<T> {
                 };
                 let queue_len = inner.queue.len();
                 if queue_len > 0 {
-                    return Ok(inner.queue.remove(0));
+                    return Ok(inner.queue.pop_front().unwrap());
                 } else {
                     // only check for 0 senders if queue is empty
                     if inner.senders == 0 {
@@ -61,7 +64,7 @@ impl<T> BlockingReceive<T> for Receiver<T> {
                 };
                 let queue_len = inner.queue.len();
                 if queue_len > 0 {
-                    return Ok((inner.queue.remove(0), queue_len));
+                    return Ok((inner.queue.pop_front().unwrap(), queue_len));
                 } else {
                     // only check for 0 senders if queue is empty
                     if inner.senders == 0 {
@@ -87,7 +90,7 @@ impl<T: Send> BlockingSend<T> for Sender<T> {
         if inner.receivers == 0 {
             return Err(SendError::Closed(data));
         } else {
-            inner.queue.push(data);
+            inner.queue.push_back(data);
             return Ok(());
         }
     }
@@ -105,7 +108,7 @@ impl<T: Send> BlockingSend<T> for Sender<T> {
         if inner.receivers == 0 {
             return Err(crate::BSendError::Closed((data, inner.queue.len())));
         } else {
-            inner.queue.push(data);
+            inner.queue.push_back(data);
             return Ok(inner.queue.len());
         }
     }
@@ -153,7 +156,7 @@ pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
     let inner = Arc::new(Mutex::new(ChannelInner {
         senders: 1,
         receivers: 1,
-        queue: vec![],
+        queue: VecDeque::new(),
     }));
     (
         Sender {
@@ -164,9 +167,9 @@ pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
 }
 
 #[cfg(feature = "bench")]
-pub struct V1Maker;
+pub struct V2Maker;
 #[cfg(feature = "bench")]
-impl crate::ChannelMaker for V1Maker {
+impl crate::ChannelMaker for V2Maker {
     fn channel<T>(
         &self,
     ) -> (
@@ -177,46 +180,5 @@ impl crate::ChannelMaker for V1Maker {
         T: Send + 'static,
     {
         channel()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let (tx, rx) = channel::<usize>();
-        let tx_handles = (0..20).map(move |_| {
-            let tx_thread = tx.clone();
-            std::thread::spawn(move || {
-                let tx = tx_thread;
-                tx.send(1000).unwrap();
-            })
-        });
-
-        let rx_handles = (0..10).map(move |_| {
-            let rx_thread = rx.clone();
-            std::thread::spawn(move || {
-                let rx = rx_thread;
-                let mut counter = 0;
-                while let Ok(v) = rx.recv() {
-                    counter += v;
-                }
-
-                counter
-            })
-        });
-
-        for handle in tx_handles {
-            handle.join().unwrap();
-        }
-
-        let mut count = 0;
-        for handle in rx_handles {
-            count += handle.join().unwrap();
-        }
-
-        assert_eq!(count, 20_000);
     }
 }
