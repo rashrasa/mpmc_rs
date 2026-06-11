@@ -25,6 +25,10 @@ V1 gets dwarfed in terms of throughput and backpressure:
 
 ![](bench/docs/assets/3_3_throughput.png)
 
+
+![](bench/docs/assets/3_3_throughput_v2.png)
+
+
 ## (WIP) Benchmark
 
 ### Benchmark Simulation
