@@ -371,13 +371,30 @@ struct Node<T> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use std::thread;
 
-    use super::*;
+    #[test]
+    fn it_works() {
+        let msg = 5;
+
+        let (tx, rx) = channel::<i32>();
+
+        let t0 = thread::spawn(move || {
+            tx.send(msg).unwrap();
+        });
+
+        let t1 = thread::spawn(move || rx.recv().unwrap());
+        t0.join().unwrap();
+
+        let result = t1.join().unwrap();
+
+        assert_eq!(msg, result);
+    }
 
     #[test]
-    fn one_one_works() {
-        let n = 10;
+    fn n_messages_aggregated() {
+        let n = 5000;
         let msg = 5;
 
         let (tx, rx) = channel::<i32>();
