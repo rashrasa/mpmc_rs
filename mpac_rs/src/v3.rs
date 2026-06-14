@@ -1,7 +1,16 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicPtr, AtomicU8, AtomicUsize, Ordering},
+// Currently, all atomic operations use `Ordering::SeqCst`.
+// Once correctness is established, a more efficient Ordering will be used for each operation.
+// TODO
+
+use std::{
+    ptr::null,
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicU8, AtomicUsize, Ordering},
+    },
 };
+
+use log::error;
 
 use crate::{BlockingReceive, BlockingSend, RecvError, SendError};
 
@@ -24,51 +33,93 @@ struct ChannelInner<T> {
 
 impl<T> BlockingReceive<T> for Receiver<T> {
     fn recv(&self) -> Result<T, RecvError> {
-        todo!();
+        let n_send = self.inner.senders.load(Ordering::SeqCst);
+        if n_send == 0 {
+            let guard = match self.inner.queue.len.0.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            if *guard == 0 {
+                return Err(RecvError::Closed);
+            }
+        }
+
+        Ok(self.inner.queue.pop_front_wait())
     }
 }
 
 impl<T: Send> BlockingSend<T> for Sender<T> {
     fn send(&self, data: T) -> Result<(), SendError<T>> {
-        todo!();
+        let n_recv = self.inner.receivers.load(Ordering::SeqCst);
+        if n_recv == 0 {
+            Err(SendError::Closed(data))
+        } else {
+            self.inner.queue.push_back(data);
+            Ok(())
+        }
     }
 }
 
 #[cfg(feature = "bench")]
 impl<T: Send> crate::BBlockingReceive<T> for Receiver<T> {
     fn b_recv(&self) -> Result<(T, usize), crate::BRecvError> {
-        todo!();
+        let n_send = self.inner.senders.load(Ordering::SeqCst);
+        let len = *match self.inner.queue.len.0.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if n_send == 0 && len == 0 {
+            Err(crate::BRecvError::Closed(len))
+        } else {
+            Ok((self.inner.queue.pop_front_wait(), len))
+        }
     }
 }
 
 #[cfg(feature = "bench")]
 impl<T: Send> crate::BBlockingSend<T> for Sender<T> {
     fn b_send(&self, data: T) -> Result<usize, crate::BSendError<T>> {
-        todo!();
+        let n_recv = self.inner.receivers.load(Ordering::SeqCst);
+        let len = *match self.inner.queue.len.0.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if n_recv == 0 {
+            Err(crate::BSendError::Closed((data, len)))
+        } else {
+            self.inner.queue.push_back(data);
+            Ok(len)
+        }
     }
 }
 
 impl<T> Clone for Receiver<T> {
     fn clone(&self) -> Self {
-        todo!();
+        self.inner.receivers.fetch_add(1, Ordering::SeqCst);
+        Self {
+            inner: self.inner.clone(),
+        }
     }
 }
 
 impl<T> Clone for Sender<T> {
     fn clone(&self) -> Self {
-        todo!();
+        self.inner.senders.fetch_add(1, Ordering::SeqCst);
+        Self {
+            inner: self.inner.clone(),
+        }
     }
 }
 
 impl<T> Drop for Receiver<T> {
     fn drop(&mut self) {
-        todo!();
+        self.inner.receivers.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
 impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
-        todo!();
+        self.inner.senders.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -103,98 +154,291 @@ impl crate::ChannelMaker for V3Maker {
     }
 }
 
-// INVARIANT: front and back always points to a valid node or are null pointers
+unsafe impl<T: Send> Send for ConcurrentBlockingList<T> {}
+unsafe impl<T: Send> Sync for ConcurrentBlockingList<T> {}
+
+// INVARIANT: front and back are never TAKEN
 #[derive(Debug)]
 pub struct ConcurrentBlockingList<T> {
-    front: AtomicPtr<Node<T>>,
-    back: AtomicPtr<Node<T>>,
+    dummy_front: Node<T>,
+    dummy_back: Node<T>,
+
+    len: (Mutex<usize>, Condvar),
 }
 
 impl<T> ConcurrentBlockingList<T> {
     pub fn new() -> Self {
-        todo!();
+        let mut dummy_front = Node {
+            flag: AccessFlag {
+                flag: AtomicU8::new(FRONT | RELEASED),
+            },
+            next: null(),
+            // SAFETY: front/back nodes are never read
+            inner: unsafe { std::mem::zeroed() },
+        };
+
+        let dummy_back = Node {
+            flag: AccessFlag {
+                flag: AtomicU8::new(BACK | RELEASED),
+            },
+            next: &dummy_front as *const Node<T>,
+            // SAFETY: front/back nodes are never read
+            inner: unsafe { std::mem::zeroed() },
+        };
+        dummy_front.next = &dummy_back as *const Node<T>;
+
+        Self {
+            dummy_front,
+            dummy_back,
+
+            len: (Mutex::new(0), Condvar::new()),
+        }
     }
 
     pub fn pop_front_wait(&self) -> T {
-        // 1. mark front as taken
+        // wait for a push if necessary
+        let (lock, cvar) = &self.len;
+        let mut len = match lock.lock() {
+            Ok(g) => g,
+            Err(p) => {
+                error!("poison error: {:?}", p);
+                p.into_inner()
+            }
+        };
+        while *len == 0 {
+            len = cvar.wait(len).unwrap();
+        }
+        drop(len);
 
-        todo!()
+        // at this point, there should be an element for this
+        // receiver to take
+
+        // Mark front as accessed
+        // Could be contending with another receiver if len > 1
+        let dummy_front = &self.dummy_front;
+        let dummy_front_guard = loop {
+            match dummy_front.flag.access() {
+                Ok(g) => break g,
+                Err(_) => {}
+            }
+        };
+
+        // SAFETY: We have access to dummy front. No other receiver will get through.
+        // A sender may be in the middle of updating its next pointer
+        // but senders never take.
+        let front = unsafe { &*self.dummy_front.next };
+
+        let front_ident = front.flag.flag.load(Ordering::SeqCst) & IDENT_MASK;
+        if front_ident == BACK {
+            unreachable!("receiver attempting to take without an element present");
+        }
+
+        // Access the real front node
+        // Could be contending with a sender pushing an element here.
+        let front_guard = loop {
+            match front.flag.access() {
+                Ok(g) => break g,
+                Err(_) => {}
+            }
+        };
+
+        // SAFETY
+        // - If it's the dummy back node, it's never TAKEN
+        // - If it's another node:
+        //   - A sender may have access to it to update its next pointer.
+        //     In this case, we just have to wait until we can update the access flag to ACCESSED.
+        //   - A receiver can't be in the process of taking it since we guard the front dummy node with ACCESSED.
+        let front_next = unsafe { &*front.next };
+
+        let front_next_guard = loop {
+            match front_next.flag.access() {
+                Ok(g) => break g,
+                Err(_) => {}
+            }
+        };
+
+        // now we have taken next. We can update front to be next
+
+        // SAFETY
+        //
+        // We are accessing dummy_front mutably from &self
+        // This is safe since at this point, we haven't released access to dummy_front,
+        // meaning we're the only ones reading/writing to it.
+        unsafe {
+            let dummy_front = (dummy_front as *const Node<T>).cast_mut();
+            (*dummy_front).next = front.next;
+        }
+
+        // Decrement the counter before releasing access.
+        let mut len_guard = match self.len.0.lock() {
+            Ok(g) => g,
+            Err(p) => {
+                error!("poison error: {:?}", p);
+                p.into_inner()
+            }
+        };
+        *len_guard -= 1;
+        drop(len_guard);
+
+        drop(front_next_guard);
+        // front_next is no longer valid
+
+        drop(dummy_front_guard);
+        // dummy_front is no longer valid
+
+        drop(front_guard);
+        // we now have ownership of front
+
+        // At this point, we detached the front node from the list and
+        // released access to all resources.
+
+        // Take ownership of front
+
+        front.flag.take().expect("could not take front node");
+
+        let front = unsafe { Box::from_raw((front as *const Node<T>).cast_mut()) };
+
+        front.inner
     }
 
-    // pub fn push_back(&self, data: T) {
-    //     let node = Node {
-    //         inner: data,
-    //         next: AtomicPtr::new(null_mut()),
-    //     };
+    pub fn push_back(&self, data: T) {
+        let dummy_back = &self.dummy_back;
+        let dummy_back_guard = loop {
+            match dummy_back.flag.access() {
+                Ok(g) => break g,
+                Err(_) => {}
+            }
+        };
 
-    //     let a = AtomicPtr::new(Box::leak(Box::new(node)));
+        // SAFETY: we have access to dummy_back
+        let back = unsafe { &*dummy_back.next };
+        // this could be the front_dummy, a node. irrelevant
+        let back_guard = loop {
+            match back.flag.access() {
+                Ok(g) => break g,
+                Err(_) => {}
+            }
+        };
 
-    //     while let Err(_) = self.back.compare_exchange(null_mut(), success, failure) {}
-    // }
+        let node = Box::leak(Box::new(Node {
+            inner: data,
+            flag: AccessFlag {
+                flag: AtomicU8::new(NODE | RELEASED),
+            },
+            next: dummy_back as *const Node<T>,
+        }));
+
+        // SAFETY: We have exclusive access to dummy_back.
+        unsafe {
+            let dummy_back = (dummy_back as *const Node<T>).cast_mut();
+            (*dummy_back).next = node as *const Node<T>;
+        }
+
+        // SAFETY: We have exclusive access to back.
+        unsafe {
+            let back = (back as *const Node<T>).cast_mut();
+            (*back).next = node as *const Node<T>;
+        }
+
+        // Before releasing access, update count and wake someone waiting.
+
+        let mut len_guard = match self.len.0.lock() {
+            Ok(g) => g,
+            Err(p) => {
+                error!("poison error: {:?}", p);
+                p.into_inner()
+            }
+        };
+        *len_guard += 1;
+        drop(len_guard);
+        self.len.1.notify_one();
+
+        drop(back_guard);
+        // back is no longer valid
+
+        drop(dummy_back_guard);
+        // dummy_back is no longer valid
+    }
 }
 
-struct Front<T> {
-    flag: AccessFlag,
-    front: AtomicPtr<Node<T>>,
-}
-
-struct Back<T> {
-    flag: AccessFlag,
-    back: AtomicPtr<Node<T>>,
-}
-
+#[derive(Debug)]
 struct Node<T> {
     flag: AccessFlag,
-    next: AtomicPtr<Node<T>>,
+    // This pointer can be dereferenced when the caller has verified that it's impossible
+    // for its corresponding Node to be TAKEN and has set the current flag to ACCESSED.
+    next: *const Node<T>,
     inner: T,
 }
 
-const RELEASED: u8 = 0;
-const ACCESSED: u8 = 1;
-const TAKEN: u8 = 2;
+// Access
+const RELEASED: u8 = 0b0000_0000;
+const ACCESSED: u8 = 0b0000_0001;
+const TAKEN: u8 = 0b0000_0010;
 
+// Identity
+const NODE: u8 = 0b0000_0000;
+const FRONT: u8 = 0b0001_0000;
+const BACK: u8 = 0b0010_0000;
+
+const ACCESS_MASK: u8 = 0b0000_1111;
+const IDENT_MASK: u8 = 0b1111_0000;
+
+// INVARIANT: ident bits never change
+#[derive(Debug)]
 struct AccessFlag {
     flag: AtomicU8,
 }
 
 impl AccessFlag {
     fn access<'a>(&'a self) -> Result<ReleaseGuard<'a>, ()> {
-        match self
-            .flag
-            .compare_exchange(RELEASED, ACCESSED, Ordering::AcqRel, Ordering::Acquire)
-        {
+        let ident = self.flag.load(Ordering::SeqCst) & IDENT_MASK;
+
+        match self.flag.compare_exchange(
+            RELEASED | ident,
+            ACCESSED | ident,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        ) {
             Ok(_) => Ok(ReleaseGuard { inner: &self.flag }),
             Err(f) => {
-                if f == ACCESSED {
+                let access_status = f & ACCESS_MASK;
+                if access_status == ACCESSED {
                     Err(())
-                } else if f == TAKEN {
+                } else if access_status == TAKEN {
                     // taken values should be guarded
                     // in this case, they represent a node which is about to be dropped
                     // which includes this access flag
                     unreachable!("reading an AccessFlag after it was taken");
                 } else {
-                    unreachable!("impossible or unhandled flag {}", f);
+                    unreachable!("impossible or unhandled flag {:08b}", f);
                 }
             }
         }
     }
 
     fn take(&self) -> Result<(), ()> {
-        match self
-            .flag
-            .compare_exchange(RELEASED, TAKEN, Ordering::AcqRel, Ordering::Acquire)
-        {
+        let ident = self.flag.load(Ordering::SeqCst) & IDENT_MASK;
+        if ident == FRONT || ident == BACK {
+            unreachable!("attempted to take with identifier {:08b}", ident);
+        }
+        match self.flag.compare_exchange(
+            RELEASED | NODE,
+            TAKEN | NODE,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        ) {
             Ok(_) => Ok(()),
             Err(f) => {
-                if f == ACCESSED {
+                let access_status = f & ACCESS_MASK;
+                if access_status == ACCESSED {
                     Err(())
-                } else if f == TAKEN {
+                } else if access_status == TAKEN {
                     // taken values should be guarded
                     // in this case, they represent a node which is about to be dropped
                     // which includes this access flag
                     unreachable!("reading an AccessFlag after it was taken");
                 } else {
-                    unreachable!("impossible or unhandled flag {}", f);
+                    unreachable!("impossible or unhandled flag {:08b}", f);
                 }
             }
         }
@@ -207,13 +451,20 @@ pub struct ReleaseGuard<'a> {
 
 impl<'a> ReleaseGuard<'a> {
     fn release(&self) {
-        match self
-            .inner
-            .compare_exchange(ACCESSED, RELEASED, Ordering::AcqRel, Ordering::Acquire)
-        {
+        let ident = self.inner.load(Ordering::SeqCst) & IDENT_MASK;
+        match self.inner.compare_exchange(
+            ACCESSED | ident,
+            RELEASED | ident,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        ) {
             Ok(_) => {}
             Err(f) => {
-                unreachable!("could not release an accessed resource: flag was {}", f);
+                let access_status = f & ACCESS_MASK;
+                if access_status == RELEASED {
+                    return;
+                }
+                unreachable!("could not release an accessed resource: flag was {:08b}", f);
             }
         }
     }
@@ -222,5 +473,40 @@ impl<'a> ReleaseGuard<'a> {
 impl<'a> Drop for ReleaseGuard<'a> {
     fn drop(&mut self) {
         self.release();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::thread;
+
+    use super::*;
+
+    #[test]
+    fn one_one_works() {
+        let n = 5000;
+        let msg = 5;
+
+        let (tx, rx) = channel::<i32>();
+
+        let t0 = thread::spawn(move || {
+            for _ in 0..n {
+                tx.send(msg).unwrap();
+            }
+        });
+
+        let t1 = thread::spawn(move || {
+            let mut count = 0;
+
+            while let Ok(v) = rx.recv() {
+                count += v;
+            }
+            count
+        });
+        t0.join().unwrap();
+
+        let result = t1.join().unwrap();
+
+        assert_eq!(n * msg, result);
     }
 }
