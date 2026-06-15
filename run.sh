@@ -24,12 +24,12 @@ source "$HOME/.cargo/env"
 
 if $benchmark; then
     echo running benchmark
-    cargo run --bin benchmark --release 
+    cargo run --bin benchmark --release 2>&1
 fi
 
 if $aggregate; then
     echo aggregating benchmark result
-    cargo run --bin aggregate --release output/result
+    cargo run --bin aggregate --release output/result 2>&1
 fi
 
 if $plot; then
@@ -43,6 +43,6 @@ if $plot; then
     pip install -r requirements.txt -q
 
     echo plotting
-    python3 plot.py
+    python3 plot.py 2>&1
     deactivate
 fi

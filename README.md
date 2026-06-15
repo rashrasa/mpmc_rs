@@ -26,9 +26,17 @@ V1 gets dwarfed in terms of throughput and backpressure:
 
 ![](bench/docs/assets/3_3_throughput.png)
 
-
 ![](bench/docs/assets/3_3_throughput_v2.png)
 
+### Version 3
+
+Implemented as a concurrent linked-list using atomics. Despite being labelled as lock-free, the first iteration basically had 2 spin-locks, one for each end. It performed worse than Version 2 with an equal number of senders and receivers:
+
+![](bench/docs/assets/3_3_tp_v2_v3.png)
+
+![](bench/docs/assets/3_3_tp_v3_v2.png)
+
+However, the throughput was more stable across all tests (check `bench/docs/assets/*.html`, graphics coming soon).
 
 ## (WIP) Benchmark
 
@@ -56,11 +64,6 @@ V1 gets dwarfed in terms of throughput and backpressure:
 - Benchmark event recording overhead (search `BenchRunner::record`) is `~0.2% or ~170ms` of CPU samples
 - Benchmark subject had `~96% or 81000ms` of CPU time (search ``bench.exe`mpac_rs::v1``)
 
-##### Flamegraph
-
-![](bench/docs/assets/flamegraph_pre_opt.svg)
-
-
 #### Improvement 1 (`4ac7a395f332240c087cc34e66699646f1588d3e`)
 
 - Ran for: `29.9 s`
@@ -71,12 +74,6 @@ V1 gets dwarfed in terms of throughput and backpressure:
 - Benchmark overhead (search `BenchRunner`) is `~4.0% or 1200ms` of flamegraph CPU samples
 - Benchmark event recording overhead (search `BenchRunner::record`) is `~0.7% or 209ms` of flamegraph CPU samples
 - Benchmark subject had `~94% or 28000ms` of CPU time (search ``bench.exe`mpac_rs::v1``)
-
-##### Flamegraph
-
-Mostly operations from `mpac_rs`, overhead from benchmark around 
-
-![](bench/docs/assets/flamegraph_opt_1.svg)
 
 ### Optimizations
 
