@@ -79,6 +79,16 @@ fn main() -> anyhow::Result<()> {
                 make_payload: || 9u32,
             },
         ),
+        (
+            "7_7_10_10_4",
+            test_1::Config {
+                n_senders: 7,
+                n_receivers: 7,
+                sender_ttl_s: Some(10.0),
+                receiver_ttl_s: Some(10.0),
+                make_payload: || 9u32,
+            },
+        ),
     ];
 
     let version_descs = vec![

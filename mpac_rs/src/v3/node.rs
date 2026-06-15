@@ -1,6 +1,6 @@
 use std::ptr::null;
 
-use crate::v3::access_flag::{AccessFlag, Identity, ReleaseGuard};
+use crate::v3::access_flag::{AccessFlag, Identity, ReleaseGuard, Status};
 
 #[derive(Debug)]
 pub struct Node<T> {
@@ -64,8 +64,13 @@ impl<T: 'static + Send> Node<T> {
     }
 
     /// SAFETY: Must not be in the process of being TAKEN
-    pub unsafe fn try_access(&self) -> Result<ReleaseGuard<'_>, ()> {
+    pub unsafe fn try_access(&self) -> Result<ReleaseGuard<'_>, Status> {
         self.flag.try_access()
+    }
+
+    /// SAFETY: Must not be in the process of being TAKEN
+    pub unsafe fn try_declare_take(&self) -> Result<(), Status> {
+        self.flag.try_declare_take()
     }
 
     /// SAFETY: Must not be in the process of being TAKEN

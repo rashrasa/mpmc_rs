@@ -16,7 +16,10 @@ use log::{debug, error};
 
 use crate::{
     BlockingReceive, BlockingSend, RecvError, SendError,
-    v3::{access_flag::Identity, node::Node},
+    v3::{
+        access_flag::{Identity, Status},
+        node::Node,
+    },
 };
 
 #[derive(Debug)]
@@ -245,16 +248,16 @@ impl<T: 'static + Send> ConcurrentBlockingList<T> {
             );
         }
 
-        // Access the real front node
+        // Declare desire to take the real front node
         // Could be contending with a sender pushing an element here.
-        let front_guard = loop {
+        loop {
             // SAFETY: We may have shared access to front with a
             //         sender, who will never take.
-            match unsafe { front.try_access() } {
+            match unsafe { front.try_declare_take() } {
                 Ok(g) => break g,
                 Err(_) => {}
             }
-        };
+        }
 
         // SAFETY
         // - If it's the dummy back node, it's never TAKEN
@@ -264,6 +267,17 @@ impl<T: 'static + Send> ConcurrentBlockingList<T> {
         //   - A receiver can't be in the process of taking it since we guard the front dummy node with ACCESSED.
         let front_next = unsafe { front.next_node() };
 
+        // DEADLOCK: len == 1, recv holds dummy_front + front, send holds dummy_back
+        // recv waits for dummy_back, send waits for front.
+
+        // INSIGHT: We actually don't need access to front_next if it == dummy_back. It
+        // will never be TAKEN. If a push is in progress, it will wait for front.
+        // After we pop front, sender will just access dummy_front instead of front, then push the new node.
+        // We just have to make sure that at this stage, push_back gives up access to dummy_back.
+
+        // We must acquire this guard. At this point,
+        // we could be waiting for a sender to realize we've declared
+        // the intention to take and to then release this node.
         let front_next_guard = loop {
             // SAFETY: We may have shared access to front with a
             //         sender, who will never take.
@@ -300,7 +314,6 @@ impl<T: 'static + Send> ConcurrentBlockingList<T> {
             self.len.1.notify_one();
         }
 
-        drop(front_guard);
         // we now have ownership of front
 
         // At this point, we detached the front node from the list and
@@ -311,28 +324,41 @@ impl<T: 'static + Send> ConcurrentBlockingList<T> {
     }
 
     pub fn push_back(&self, data: T) {
-        let dummy_back = &self.dummy_back;
-        let dummy_back_guard = loop {
-            // SAFETY: Always safe to access a dummy node
-            match unsafe { dummy_back.try_access() } {
-                Ok(g) => break g,
+        // Deadlock prevention: Sender keeps releasing dummy_back if receiver is trying to pop.
+        // Only relevant for len == 1
+        let (dummy_back, dummy_back_guard, back, back_guard) = loop {
+            let dummy_back = self.dummy_back;
+            let dummy_back_guard = loop {
+                // SAFETY: Always safe to access a dummy node
+                match unsafe { dummy_back.try_access() } {
+                    Ok(g) => break g,
+                    Err(_) => {}
+                }
+            };
+
+            // SAFETY: we have access to dummy_back
+            let back = unsafe { dummy_back.next_node() };
+            // this could be the front_dummy, a node. all irrelevant
+
+            let back_guard = loop {
+                // SAFETY: If this was a node being taken,
+                // we wouldn't have access to dummy_back at this point. We do,
+                // which means a pop is not in progress.
+                match unsafe { back.try_access() } {
+                    Ok(g) => break Ok(g),
+                    Err(Status::DeclareTake) => {
+                        // release dummy_back_guard
+                        break Err(());
+                        break Err(());
+                    }
+                    Err(_) => {}
+                }
+            };
+            match back_guard {
+                Ok(bg) => break (dummy_back, dummy_back_guard, back, bg),
                 Err(_) => {}
             }
         };
-
-        // SAFETY: we have access to dummy_back
-        let back = unsafe { dummy_back.next_node() };
-        // this could be the front_dummy, a node. irrelevant
-        let back_guard = loop {
-            // SAFETY: If this was a node being taken,
-            // we wouldn't have access to dummy_back at this point. We do,
-            // which means a pop is not in progress.
-            match unsafe { back.try_access() } {
-                Ok(g) => break g,
-                Err(_) => {}
-            }
-        };
-
         let node = Node::new_leaked_node(data);
 
         // SAFETY: We have exclusive access to node and dummy_back

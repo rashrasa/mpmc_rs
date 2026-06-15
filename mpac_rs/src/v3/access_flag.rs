@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 const RELEASED: u8 = 0b0000_0000;
 const ACCESSED: u8 = 0b0000_0001;
 const TAKEN: u8 = 0b0000_0010;
+const DECLARE_TAKE: u8 = 0b0000_0011;
 
 // Identity
 const NODE: u8 = 0b0000_0000;
@@ -25,6 +26,7 @@ pub enum Status {
     Released,
     Accessed,
     Taken,
+    DeclareTake,
 }
 
 // INVARIANT: ident bits never change
@@ -45,7 +47,7 @@ impl AccessFlag {
         }
     }
 
-    pub fn try_access<'a>(&'a self) -> Result<ReleaseGuard<'a>, ()> {
+    pub fn try_access<'a>(&'a self) -> Result<ReleaseGuard<'a>, Status> {
         let ident_bits = self.ident_bits();
 
         match self.flag.compare_exchange(
@@ -58,7 +60,9 @@ impl AccessFlag {
             Err(f) => {
                 let access_status = f & ACCESS_MASK;
                 if access_status == ACCESSED {
-                    Err(())
+                    Err(Status::Accessed)
+                } else if access_status == DECLARE_TAKE {
+                    Err(Status::DeclareTake)
                 } else if access_status == TAKEN {
                     // taken values should be guarded
                     // in this case, they represent a node which is about to be dropped
@@ -71,7 +75,36 @@ impl AccessFlag {
         }
     }
 
-    pub fn try_take(&self) -> Result<(), ()> {
+    pub fn try_declare_take(&self) -> Result<(), Status> {
+        let ident_bits = self.ident_bits();
+
+        match self.flag.compare_exchange(
+            RELEASED | ident_bits,
+            DECLARE_TAKE | ident_bits,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        ) {
+            Ok(_) => Ok(()),
+            Err(f) => {
+                let access_status = f & ACCESS_MASK;
+                if access_status == ACCESSED {
+                    Err(Status::Accessed)
+                } else if access_status == DECLARE_TAKE {
+                    unreachable!("a flag is being set to DECLARE_TAKE more than once");
+                } else if access_status == TAKEN {
+                    // taken values should be guarded
+                    // in this case, they represent a node which is about to be dropped
+                    // which includes this access flag
+                    unreachable!("reading an AccessFlag after it was taken");
+                } else {
+                    unreachable!("impossible or unhandled flag {:08b}", f);
+                }
+            }
+        }
+    }
+
+    // TODO: Make it mandatory to hand in a "DeclaredTakeGuard"
+    pub fn try_take(&self) -> Result<(), Status> {
         let identity = self.identity();
         if identity == Identity::Front || identity == Identity::Back {
             unreachable!(
@@ -81,7 +114,7 @@ impl AccessFlag {
             );
         }
         match self.flag.compare_exchange(
-            RELEASED | NODE,
+            DECLARE_TAKE | NODE,
             TAKEN | NODE,
             Ordering::SeqCst,
             Ordering::SeqCst,
@@ -90,12 +123,16 @@ impl AccessFlag {
             Err(f) => {
                 let access_status = f & ACCESS_MASK;
                 if access_status == ACCESSED {
-                    Err(())
+                    Err(Status::Accessed)
                 } else if access_status == TAKEN {
                     // taken values should be guarded
                     // in this case, they represent a node which is about to be dropped
                     // which includes this access flag
                     unreachable!("reading an AccessFlag after it was taken");
+                } else if access_status == RELEASED {
+                    unreachable!(
+                        "attempted to take before declaring intent (use try_declare_take)"
+                    );
                 } else {
                     unreachable!("impossible or unhandled flag {:08b}", f);
                 }
@@ -129,6 +166,7 @@ impl AccessFlag {
             RELEASED => Status::Released,
             TAKEN => Status::Taken,
             ACCESSED => Status::Accessed,
+            DECLARE_TAKE => Status::DeclareTake,
             _ => unreachable!(),
         }
     }
