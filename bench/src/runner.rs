@@ -45,6 +45,10 @@ impl MainBenchRunner {
         self.inner.spawn_runner(id)
     }
 
+    pub fn reset_ids(&self) {
+        self.inner.id_bank.store(0, Ordering::SeqCst);
+    }
+
     pub fn complete_runner(self) -> anyhow::Result<()> {
         self.inner
             .complete_runner()

@@ -101,7 +101,7 @@ fn main() -> anyhow::Result<()> {
     let mut clock = Clock::new();
     let start = clock.now();
 
-    let runner = MainBenchRunner::new(Path::new("output/result").to_path_buf());
+    let main_runner = MainBenchRunner::new(Path::new("output/result").to_path_buf());
 
     for v in &version_descs {
         let version_desc = match v {
@@ -109,13 +109,15 @@ fn main() -> anyhow::Result<()> {
             Version::V2(d) => d,
             Version::V3(d) => d,
         };
-        let runner = runner.spawn_runner(format!("version_{}", version_desc));
+        let runner = main_runner.spawn_runner(format!("version_{}", version_desc));
         for (config_desc, config) in &configs {
+            main_runner.reset_ids();
             info!(
                 "Starting {} tests with profile {}",
                 version_desc, config_desc
             );
             let runner = runner.spawn_runner(format!("config_{}", config_desc));
+
             match v {
                 Version::V1(_) => run_bench_1(&runner, &V1Maker, config.clone())
                     .context("failed to run benchmark 1")?,
@@ -134,7 +136,7 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    if let Err(err) = runner.complete_runner() {
+    if let Err(err) = main_runner.complete_runner() {
         error!("{:?}", err);
     }
 

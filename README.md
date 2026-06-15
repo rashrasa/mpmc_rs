@@ -102,3 +102,28 @@ However, the throughput was more stable across all tests (check `bench/docs/asse
 
 Instead of storing `Instant`s in events, now storing elapsed seconds from the runner's start time as `f64`. This results in an `Instant::now` call for each event, which explains the rise in `BenchRunner::record`'s proportion of CPU time increasing. This was originally done to reduce the amount of cloning done when a runner exits and writes to value (mapping needed from `Instant` to duration in seconds), but is now being reconsidered.
 
+## (WIP) Aggregator
+
+### Optimizations
+
+Given `13.4 GB` of raw benchmark data,
+
+Starting at `400.32s` with initial implementation:
+
+Speedup 1: Time down to `305.34s`
+
+- Lazily evaluating error string in `LazyWindowedMetric::add` on Option value (using `ok_or_else` instead of `ok_or`)
+
+Thats it... for a `1.31x` speedup.
+
+Speedup 2: Time down to `94.60s`
+
+- Sorting aggregation bucket values lazily in `LazyWindowedMetric::generate` 
+- Meaning there are no more inserts to each bucket, only pushes
+- No longer using sorted values in `LazyWindowedMetric::generate_gauged`
+
+Speedup 3: Time down to `29.70s`
+
+- Vec instead of HashMap for u64 keys
+    - Had to update benchmark runner to reset event ids to 0 for each run
+- Estimating number of events by summing file sizes then pre-allocating entire vec at the start

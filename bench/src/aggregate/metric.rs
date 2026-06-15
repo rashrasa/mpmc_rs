@@ -90,7 +90,7 @@ pub struct LazyWindowedMetric {
 pub struct LazyWindowedMetricBucket {
     start: f64,
     end: f64,
-    sorted_values: Vec<f64>,
+    values: Vec<f64>,
 }
 
 impl LazyWindowedMetric {
@@ -104,7 +104,7 @@ impl LazyWindowedMetric {
             buckets.push(LazyWindowedMetricBucket {
                 start: t,
                 end: t + period,
-                sorted_values: vec![],
+                values: vec![],
             });
             t += period;
         }
@@ -133,44 +133,40 @@ impl LazyWindowedMetric {
             ((time - self.start) / self.period).floor() as usize
         };
 
-        let dst_i = match self
-            .buckets
-            .get(bucket)
+        self.buckets
+            .get_mut(bucket)
             .ok_or_else(|| {
                 anyhow!(
                     "index {bucket} out of range. bucket count: {}",
                     self.n_buckets
                 )
             })?
-            .sorted_values
-            .binary_search_by(|a| a.total_cmp(&value))
-        {
-            Ok(i) => i,
-            Err(i) => i,
-        };
-        self.buckets[bucket].sorted_values.insert(dst_i, value);
+            .values
+            .push(value);
         Ok(())
     }
 
-    pub fn generate(&self) -> anyhow::Result<Vec<DistributionMetric>> {
+    pub fn generate(&mut self) -> anyhow::Result<Vec<DistributionMetric>> {
         let mut result = vec![];
-        for bucket in &self.buckets {
-            if bucket.sorted_values.len() == 0 {
+        for bucket in &mut self.buckets {
+            if bucket.values.len() == 0 {
                 result.push(DistributionMetric::NoEvents {
                     start: bucket.start,
                     end: bucket.end,
                 });
                 continue;
             }
+            bucket.values.sort_unstable_by(|a, b| a.total_cmp(b));
+
             let mut min = f64::INFINITY;
             let mut max = -f64::INFINITY;
 
-            let res = std_dev::standard_deviation(&bucket.sorted_values);
+            let res = std_dev::standard_deviation(&bucket.values);
 
             let mean = res.mean;
             let std_dev = res.standard_deviation;
 
-            for v in bucket.sorted_values.iter() {
+            for v in bucket.values.iter() {
                 min = min.min(*v);
                 max = max.max(*v);
             }
@@ -179,21 +175,19 @@ impl LazyWindowedMetric {
                 start: bucket.start,
                 end: bucket.end,
 
-                count: bucket.sorted_values.len(),
+                count: bucket.values.len(),
 
                 min,
                 max,
                 mean,
                 std_dev,
-                p50: percentile(&bucket.sorted_values, 0.5).context("failed to calculate p50")?,
-                p90: percentile(&bucket.sorted_values, 0.9).context("failed to calculate p90")?,
-                p95: percentile(&bucket.sorted_values, 0.95).context("failed to calculate p95")?,
-                p99: percentile(&bucket.sorted_values, 0.99).context("failed to calculate p99")?,
-                p999: percentile(&bucket.sorted_values, 0.999)
-                    .context("failed to calculate p999")?,
-                p9999: percentile(&bucket.sorted_values, 0.9999)
-                    .context("failed to calculate p9999")?,
-                p99999: percentile(&bucket.sorted_values, 0.99999)
+                p50: percentile(&bucket.values, 0.5).context("failed to calculate p50")?,
+                p90: percentile(&bucket.values, 0.9).context("failed to calculate p90")?,
+                p95: percentile(&bucket.values, 0.95).context("failed to calculate p95")?,
+                p99: percentile(&bucket.values, 0.99).context("failed to calculate p99")?,
+                p999: percentile(&bucket.values, 0.999).context("failed to calculate p999")?,
+                p9999: percentile(&bucket.values, 0.9999).context("failed to calculate p9999")?,
+                p99999: percentile(&bucket.values, 0.99999)
                     .context("failed to calculate p99999")?,
             });
         }
@@ -203,15 +197,16 @@ impl LazyWindowedMetric {
     pub fn generate_gauged(&self) -> anyhow::Result<Vec<GaugeMetric>> {
         let mut result = vec![];
         for bucket in &self.buckets {
-            if bucket.sorted_values.len() == 0 {
+            if bucket.values.len() == 0 {
                 result.push(GaugeMetric::NoEvents {
                     start: bucket.start,
                     end: bucket.end,
                 });
                 continue;
             }
+
             let mut value = 0.0;
-            for v in bucket.sorted_values.iter() {
+            for v in bucket.values.iter() {
                 value += v;
             }
 
@@ -219,7 +214,7 @@ impl LazyWindowedMetric {
                 start: bucket.start,
                 end: bucket.end,
 
-                count: bucket.sorted_values.len(),
+                count: bucket.values.len(),
 
                 value: value / self.period,
             });
