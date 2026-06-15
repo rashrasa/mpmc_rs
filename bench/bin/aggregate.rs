@@ -1,5 +1,5 @@
 use std::{
-    fs,
+    fs::{self, DirEntry},
     io::{BufWriter, Write},
     path::{Path, PathBuf},
 };
@@ -36,6 +36,8 @@ fn main() -> anyhow::Result<()> {
     fs::create_dir_all(&save_to_root)
         .context(format!("could not create directory {save_to_root:?}"))?;
 
+    let mut handles: Vec<std::thread::JoinHandle<anyhow::Result<()>>> = vec![];
+
     for version_entry in
         fs::read_dir(&path).context(format!("could not find directory {path:?}"))?
     {
@@ -54,44 +56,60 @@ fn main() -> anyhow::Result<()> {
             );
 
             for config_entry in version_path.read_dir().unwrap() {
-                let config_entry = config_entry?;
-                let config_path = config_entry.path();
-                if config_path.is_dir() {
-                    let config_path_str = config_path
-                        .file_name()
-                        .context(format!("path {config_path:?} is invalid"))?
-                        .to_str()
-                        .ok_or(anyhow::Error::msg(format!(
-                            "could not convert path {config_path:?} to string"
-                        )))?;
-                    let config_name = config_path_str.replace("config_", "");
-
-                    let agg = Aggregation::from_directory(&config_path, 0.001).context(format!(
-                        "could not run aggregation for version \"{}\" config \"{}\"",
-                        version_name, config_name
-                    ))?;
-
-                    let save_to =
-                        save_to_root.join(format!("{}_{}.json", version_name, config_name));
-
-                    let mut file =
-                        BufWriter::new(fs::File::create(&save_to).context("could not open file")?);
-
-                    let result = Run {
-                        version: version_name.clone(),
-                        config: config_name,
-                        aggregation: agg,
-                    };
-
-                    file.write_all(&serde_json::to_vec(&result)?)?;
-
-                    info!("wrote result to {}", save_to.to_str().unwrap());
-                }
+                let version_name = version_name.clone();
+                let save_to_root = save_to_root.clone();
+                handles.push(std::thread::spawn(move || {
+                    run_work(config_entry, version_name, save_to_root)
+                }));
             }
         }
     }
 
+    for handle in handles {
+        handle.join().unwrap()?;
+    }
+
     return Ok(());
+}
+
+fn run_work(
+    config_entry: Result<DirEntry, std::io::Error>,
+    version_name: String,
+    save_to_root: PathBuf,
+) -> anyhow::Result<()> {
+    let config_entry = config_entry?;
+    let config_path = config_entry.path();
+    if config_path.is_dir() {
+        let config_path_str = config_path
+            .file_name()
+            .context(format!("path {config_path:?} is invalid"))?
+            .to_str()
+            .ok_or(anyhow::Error::msg(format!(
+                "could not convert path {config_path:?} to string"
+            )))?;
+        let config_name = config_path_str.replace("config_", "");
+
+        let agg = Aggregation::from_directory(&config_path, 0.001).context(format!(
+            "could not run aggregation for version \"{}\" config \"{}\"",
+            version_name, config_name
+        ))?;
+
+        let save_to = save_to_root.join(format!("{}_{}.json", version_name, config_name));
+
+        let mut file = BufWriter::new(fs::File::create(&save_to).context("could not open file")?);
+
+        let result = Run {
+            version: version_name.clone(),
+            config: config_name,
+            aggregation: agg,
+        };
+
+        file.write_all(&serde_json::to_vec(&result)?)?;
+
+        info!("wrote result to {}", save_to.to_str().unwrap());
+    }
+
+    Ok(())
 }
 
 #[derive(Serialize, Deserialize)]
