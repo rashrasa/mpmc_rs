@@ -2,6 +2,8 @@
 // Once correctness is established, a more efficient Ordering will be used for each operation.
 // TODO
 
+// TODO: Fix waking mechanism
+
 mod access_flag;
 mod node;
 
@@ -10,7 +12,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use log::error;
+use log::{debug, error};
 
 use crate::{
     BlockingReceive, BlockingSend, RecvError, SendError,
@@ -116,13 +118,19 @@ impl<T: 'static + Send> Clone for Sender<T> {
 
 impl<T: 'static + Send> Drop for Receiver<T> {
     fn drop(&mut self) {
-        self.inner.receivers.fetch_sub(1, Ordering::SeqCst);
+        let n_receivers = self.inner.receivers.fetch_sub(1, Ordering::SeqCst);
+
+        #[cfg(feature = "bench")]
+        debug!("Receiver count: {}", n_receivers - 1);
     }
 }
 
 impl<T: 'static + Send> Drop for Sender<T> {
     fn drop(&mut self) {
-        self.inner.senders.fetch_sub(1, Ordering::SeqCst);
+        let n_receivers = self.inner.senders.fetch_sub(1, Ordering::SeqCst);
+
+        #[cfg(feature = "bench")]
+        debug!("Sender count: {}", n_receivers - 1);
     }
 }
 
@@ -194,17 +202,20 @@ impl<T: 'static + Send> ConcurrentBlockingList<T> {
     pub fn pop_front_wait(&self) -> T {
         // wait for a push if necessary
         let (lock, cvar) = &self.len;
-        let mut len = match lock.lock() {
+        let mut len_guard = match lock.lock() {
             Ok(g) => g,
             Err(p) => {
                 error!("poison error: {:?}", p);
                 p.into_inner()
             }
         };
-        while *len == 0 {
-            len = cvar.wait(len).unwrap();
+        let mut len = *len_guard;
+        while len == 0 {
+            len_guard = cvar.wait(len_guard).unwrap();
+            len = *len_guard;
         }
-        drop(len);
+        *len_guard -= 1;
+        drop(len_guard);
 
         // at this point, there should be an element for this
         // receiver to take
@@ -228,7 +239,10 @@ impl<T: 'static + Send> ConcurrentBlockingList<T> {
         // SAFETY: We have exclusive access to front
         let front_ident = unsafe { front.identity() };
         if front_ident == Identity::Back {
-            unreachable!("receiver attempting to take without an element present");
+            unreachable!(
+                "receiver attempting to take without an element present. queue len: {}",
+                len
+            );
         }
 
         // Access the real front node
@@ -275,22 +289,16 @@ impl<T: 'static + Send> ConcurrentBlockingList<T> {
             }
         }
 
-        // Decrement the counter before releasing access.
-        let mut len_guard = match self.len.0.lock() {
-            Ok(g) => g,
-            Err(p) => {
-                error!("poison error: {:?}", p);
-                p.into_inner()
-            }
-        };
-        *len_guard -= 1;
-        drop(len_guard);
-
         drop(front_next_guard);
         // front_next is no longer valid
 
         drop(dummy_front_guard);
         // dummy_front is no longer valid
+
+        if len > 0 {
+            // only one receiver at a time, so we must wake others
+            self.len.1.notify_one();
+        }
 
         drop(front_guard);
         // we now have ownership of front
@@ -342,8 +350,13 @@ impl<T: 'static + Send> ConcurrentBlockingList<T> {
             back.set_next(node);
         }
 
-        // Before releasing access, update count and wake someone waiting.
+        drop(back_guard);
+        // back is no longer valid
 
+        drop(dummy_back_guard);
+        // dummy_back is no longer valid
+
+        // wake someone
         let mut len_guard = match self.len.0.lock() {
             Ok(g) => g,
             Err(p) => {
@@ -352,14 +365,12 @@ impl<T: 'static + Send> ConcurrentBlockingList<T> {
             }
         };
         *len_guard += 1;
+        let len = *len_guard;
         drop(len_guard);
-        self.len.1.notify_one();
-
-        drop(back_guard);
-        // back is no longer valid
-
-        drop(dummy_back_guard);
-        // dummy_back is no longer valid
+        if len == 1 {
+            // Notify if the len went from 0 to 1
+            self.len.1.notify_one();
+        }
     }
 }
 

@@ -63,17 +63,17 @@ impl<T: 'static + Send> Node<T> {
         v
     }
 
-    // SAFETY: Must not be in the process of being TAKEN
+    /// SAFETY: Must not be in the process of being TAKEN
     pub unsafe fn try_access(&self) -> Result<ReleaseGuard<'_>, ()> {
         self.flag.try_access()
     }
 
-    // SAFETY: Must not be in the process of being TAKEN
+    /// SAFETY: Must not be in the process of being TAKEN
     pub unsafe fn identity(&self) -> Identity {
         self.flag.identity()
     }
 
-    // SAFETY: Must have exclusive access to this Node
+    /// SAFETY: Must have exclusive access to this Node
     pub unsafe fn read_inner(&self) -> &T {
         &self.inner
     }

@@ -8,11 +8,12 @@ use bench::{
     test::test_1::{self, run_bench_1},
 };
 use log::{error, info};
-use mpac_rs::{v1::V1Maker, v2::V2Maker};
+use mpac_rs::{v1::V1Maker, v2::V2Maker, v3::V3Maker};
 
 enum Version {
     V1(&'static str),
     V2(&'static str),
+    V3(&'static str),
 }
 
 /// ## Bench:
@@ -80,7 +81,11 @@ fn main() -> anyhow::Result<()> {
         ),
     ];
 
-    let version_descs = vec![Version::V1("v1_naive"), Version::V2("v2_vec_deque")];
+    let version_descs = vec![
+        Version::V1("v1_naive"),
+        Version::V2("v2_vec_deque"),
+        Version::V3("v3_lock_free"),
+    ];
 
     info!("Starting benchmark");
     let mut clock = Clock::new();
@@ -92,6 +97,7 @@ fn main() -> anyhow::Result<()> {
         let version_desc = match v {
             Version::V1(d) => d,
             Version::V2(d) => d,
+            Version::V3(d) => d,
         };
         let runner = runner.spawn_runner(format!("version_{}", version_desc));
         for (config_desc, config) in &configs {
@@ -104,6 +110,8 @@ fn main() -> anyhow::Result<()> {
                 Version::V1(_) => run_bench_1(&runner, &V1Maker, config.clone())
                     .context("failed to run benchmark 1")?,
                 Version::V2(_) => run_bench_1(&runner, &V2Maker, config.clone())
+                    .context("failed to run benchmark 1")?,
+                Version::V3(_) => run_bench_1(&runner, &V3Maker, config.clone())
                     .context("failed to run benchmark 1")?,
             }
 
