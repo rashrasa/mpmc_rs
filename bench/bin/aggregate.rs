@@ -2,14 +2,20 @@ use std::{
     fs::{self, DirEntry},
     io::{BufWriter, Write},
     path::{Path, PathBuf},
+    time::Instant,
 };
 
 use anyhow::Context;
 use bench::aggregate::Aggregation;
-use log::info;
+use log::{debug, info};
 use serde::{Deserialize, Serialize};
 
 fn main() -> anyhow::Result<()> {
+    env_logger::builder()
+        .target(env_logger::Target::Stdout)
+        .filter_level(log::LevelFilter::Debug)
+        .init();
+    let start = Instant::now();
     let path = std::env::args()
         .nth(1)
         .ok_or(anyhow::Error::msg("expected a path argument"))?;
@@ -36,8 +42,6 @@ fn main() -> anyhow::Result<()> {
     fs::create_dir_all(&save_to_root)
         .context(format!("could not create directory {save_to_root:?}"))?;
 
-    let mut handles: Vec<std::thread::JoinHandle<anyhow::Result<()>>> = vec![];
-
     for version_entry in
         fs::read_dir(&path).context(format!("could not find directory {path:?}"))?
     {
@@ -58,17 +62,12 @@ fn main() -> anyhow::Result<()> {
             for config_entry in version_path.read_dir().unwrap() {
                 let version_name = version_name.clone();
                 let save_to_root = save_to_root.clone();
-                handles.push(std::thread::spawn(move || {
-                    run_work(config_entry, version_name, save_to_root)
-                }));
+                run_work(config_entry, version_name, save_to_root)?;
             }
         }
     }
 
-    for handle in handles {
-        handle.join().unwrap()?;
-    }
-
+    debug!("ran aggregation in {:.2}s", start.elapsed().as_secs_f64());
     return Ok(());
 }
 

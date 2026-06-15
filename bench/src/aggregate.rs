@@ -41,15 +41,11 @@ pub enum ReconstructedEvent {
         id: u64,
         start_tx_s: f64,
         end_tx_s: f64,
-
-        backpressure_end: u64,
     },
     PartialReceiverEvent {
         id: u64,
         start_rx_s: f64,
         end_rx_s: f64,
-
-        backpressure_end: u64,
     },
     ReconstructedEvent {
         id: u64,
@@ -57,9 +53,6 @@ pub enum ReconstructedEvent {
         end_tx_s: f64,
         start_rx_s: f64,
         end_rx_s: f64,
-
-        backpressure_tx_end: u64,
-        backpressure_rx_end: u64,
     },
 }
 
@@ -71,8 +64,10 @@ impl Aggregation {
     ) -> anyhow::Result<Aggregation> {
         let mut constructed_events: HashMap<u64, ReconstructedEvent> = HashMap::new();
 
-        let mut runner_starts = vec![];
-        let mut runner_ends = vec![];
+        let mut start = f64::MAX;
+        let mut end = f64::MIN;
+
+        let mut backpressure: Vec<(f64, u64)> = vec![];
 
         for entry in read_dir(run_path).context("failed to create path iterator")? {
             let entry = entry.context("failed to read dir entry")?;
@@ -89,12 +84,13 @@ impl Aggregation {
 
             let (runner_start, runner_end, _, _) = next_binary_row(&mut file)?;
 
-            runner_starts.push(runner_start);
-            runner_ends.push(runner_end);
+            start = start.min(runner_start);
+            end = end.max(runner_end);
 
             loop {
                 match next_binary_row(&mut file) {
                     Ok((event_start, event_end, event_id, event_backpressure)) => {
+                        backpressure.push((event_end, event_backpressure));
                         match constructed_events.entry(event_id) {
                             Occupied(mut e) => {
                                 let v = e.get_mut();
@@ -103,7 +99,6 @@ impl Aggregation {
                                         id,
                                         start_rx_s,
                                         end_rx_s,
-                                        backpressure_end,
                                     } => {
                                         if is_tx {
                                             *v = ReconstructedEvent::ReconstructedEvent {
@@ -112,9 +107,6 @@ impl Aggregation {
                                                 end_tx_s: event_end,
                                                 start_rx_s: *start_rx_s,
                                                 end_rx_s: *end_rx_s,
-
-                                                backpressure_rx_end: *backpressure_end,
-                                                backpressure_tx_end: event_backpressure,
                                             }
                                         } else {
                                             return Err(anyhow::Error::msg(format!(
@@ -126,7 +118,6 @@ impl Aggregation {
                                         id,
                                         start_tx_s,
                                         end_tx_s,
-                                        backpressure_end,
                                     } => {
                                         if !is_tx {
                                             *v = ReconstructedEvent::ReconstructedEvent {
@@ -135,9 +126,6 @@ impl Aggregation {
                                                 end_tx_s: *end_tx_s,
                                                 start_rx_s: event_start,
                                                 end_rx_s: event_end,
-
-                                                backpressure_tx_end: *backpressure_end,
-                                                backpressure_rx_end: event_backpressure,
                                             }
                                         } else {
                                             return Err(anyhow::Error::msg(format!(
@@ -156,14 +144,12 @@ impl Aggregation {
                                         start_tx_s: event_start,
                                         end_tx_s: event_end,
                                         id: event_id,
-                                        backpressure_end: event_backpressure,
                                     });
                                 } else {
                                     e.insert_entry(PartialReceiverEvent {
                                         start_rx_s: event_start,
                                         end_rx_s: event_end,
                                         id: event_id,
-                                        backpressure_end: event_backpressure,
                                     });
                                 }
                             }
@@ -180,22 +166,11 @@ impl Aggregation {
             }
         }
 
-        let start_s = *runner_starts
-            .iter()
-            .min_by(|a, b| a.total_cmp(*b))
-            .expect("no min found");
-        let end_s = *runner_ends
-            .iter()
-            .max_by(|a, b| a.total_cmp(*b))
-            .expect("no max found");
+        let mut lazy_send_delay = LazyWindowedMetric::new(aggregation_period_s, start, end);
+        let mut lazy_recv_delay = LazyWindowedMetric::new(aggregation_period_s, start, end);
+        let mut lazy_latency = LazyWindowedMetric::new(aggregation_period_s, start, end);
 
-        let mut lazy_send_delay = LazyWindowedMetric::new(aggregation_period_s, start_s, end_s);
-        let mut lazy_recv_delay = LazyWindowedMetric::new(aggregation_period_s, start_s, end_s);
-        let mut lazy_latency = LazyWindowedMetric::new(aggregation_period_s, start_s, end_s);
-
-        let mut lazy_throughput = LazyWindowedMetric::new(aggregation_period_s, start_s, end_s);
-
-        let mut backpressure = vec![];
+        let mut lazy_throughput = LazyWindowedMetric::new(aggregation_period_s, start, end);
 
         for (_, event) in constructed_events {
             match event {
@@ -203,19 +178,15 @@ impl Aggregation {
                     id: _,
                     start_tx_s,
                     end_tx_s,
-                    backpressure_end,
                 } => {
                     lazy_send_delay.add(end_tx_s - start_tx_s, start_tx_s)?;
-                    backpressure.push((end_tx_s, backpressure_end));
                 }
                 PartialReceiverEvent {
                     id: _,
                     start_rx_s,
                     end_rx_s,
-                    backpressure_end,
                 } => {
                     lazy_recv_delay.add(end_rx_s - start_rx_s, start_rx_s)?;
-                    backpressure.push((end_rx_s, backpressure_end));
                 }
                 ReconstructedEvent::ReconstructedEvent {
                     id: _,
@@ -223,17 +194,12 @@ impl Aggregation {
                     end_tx_s,
                     start_rx_s,
                     end_rx_s,
-                    backpressure_rx_end,
-                    backpressure_tx_end,
                 } => {
                     lazy_send_delay.add(end_tx_s - start_tx_s, start_tx_s)?;
                     lazy_recv_delay.add(end_rx_s - start_rx_s, start_rx_s)?;
 
                     lazy_latency.add(end_rx_s - start_tx_s, start_tx_s)?;
                     lazy_throughput.add(1.0, end_rx_s)?;
-
-                    backpressure.push((end_tx_s, backpressure_tx_end));
-                    backpressure.push((end_rx_s, backpressure_rx_end));
                 }
             }
         }
@@ -241,8 +207,8 @@ impl Aggregation {
         backpressure.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
 
         Ok(Aggregation {
-            start: start_s,
-            end: end_s,
+            start: start,
+            end: end,
 
             sorted_backpressure_values: backpressure,
 

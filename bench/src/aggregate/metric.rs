@@ -1,4 +1,4 @@
-use anyhow::Context;
+use anyhow::{Context, anyhow};
 use serde::{Deserialize, Serialize};
 
 /// Calculates the `p*100`-th percentile of `sorted_values`.
@@ -120,9 +120,11 @@ impl LazyWindowedMetric {
 
     // `time` must be in `[start, end]`
     pub fn add(&mut self, value: f64, time: f64) -> anyhow::Result<()> {
-        assert!(
+        debug_assert!(
             time >= self.start && time <= self.end,
-            "time not in range [start, end]",
+            "time not in range [{}, {}]",
+            self.start,
+            self.end
         );
         let bucket = if time == self.end {
             // only the end range of the end bucket is inclusive
@@ -134,10 +136,12 @@ impl LazyWindowedMetric {
         let dst_i = match self
             .buckets
             .get(bucket)
-            .ok_or(anyhow::Error::msg(format!(
-                "index {bucket} out of range. bucket count: {}",
-                self.n_buckets
-            )))?
+            .ok_or_else(|| {
+                anyhow!(
+                    "index {bucket} out of range. bucket count: {}",
+                    self.n_buckets
+                )
+            })?
             .sorted_values
             .binary_search_by(|a| a.total_cmp(&value))
         {
