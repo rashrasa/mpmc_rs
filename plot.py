@@ -33,6 +33,7 @@ for series in grouped.values():
         global_tp_max = max(global_tp_max, tp)
 
 for config, series in grouped.items():
+    series.sort(key=lambda x: x[0] )
     fig = make_subplots(
         rows=len(series),
         cols=1,
