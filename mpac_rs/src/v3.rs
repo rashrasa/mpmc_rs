@@ -2,7 +2,7 @@
 // Once correctness is established, a more efficient Ordering will be used for each operation.
 // TODO
 
-// TODO: Fix waking mechanism
+// TODO: Fix waking mechanism, too much contention around ConcurrentBlockingList.len
 
 mod access_flag;
 mod node;
@@ -348,7 +348,6 @@ impl<T: 'static + Send> ConcurrentBlockingList<T> {
                     Ok(g) => break Ok(g),
                     Err(Status::DeclareTake) => {
                         // release dummy_back_guard
-                        break Err(());
                         break Err(());
                     }
                     Err(_) => {}
