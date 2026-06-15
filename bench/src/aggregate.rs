@@ -1,7 +1,6 @@
 pub mod metric;
 
 use std::{
-    fmt::Display,
     fs::{File, read_dir},
     io::{BufReader, ErrorKind::UnexpectedEof, Read},
     path::Path,
@@ -253,26 +252,6 @@ impl Aggregation {
                 .generate_gauged()
                 .context("failed to generate aggregation for throughput metric")?,
         })
-    }
-}
-impl Display for Aggregation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut formatted = String::from("Aggregation\n\n");
-
-        formatted = format!(
-            "{formatted}Aggregation Period: {}\n",
-            self.aggregation_period_s
-        );
-        for window in 0..self.n_windows {
-            formatted = format!("{formatted}Window {}:\n\n\n", window);
-
-            formatted = format!("{formatted}Avg Send Delay:\n{}\n", self.send_delay[window]);
-            formatted = format!("{formatted}Receive Delay:\n{}\n", self.recv_delay[window]);
-            formatted = format!("{formatted}Latency:\n{}\n", self.data_latency[window]);
-            formatted = format!("{formatted}Throughput:\n{}\n", self.throughput[window]);
-        }
-
-        write!(f, "{}", formatted)
     }
 }
 
