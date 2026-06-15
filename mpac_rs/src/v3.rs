@@ -227,7 +227,7 @@ impl<T> ConcurrentBlockingList<T> {
         // SAFETY: We have access to dummy front. No other receiver will get through.
         // A sender may be in the middle of updating its next pointer
         // but senders never take.
-        let front = unsafe { &*self.dummy_front.next };
+        let front = unsafe { self.dummy_front.next_node() };
 
         let front_ident = front.flag.identity();
         if front_ident == Identity::Back {
@@ -249,7 +249,7 @@ impl<T> ConcurrentBlockingList<T> {
         //   - A sender may have access to it to update its next pointer.
         //     In this case, we just have to wait until we can update the access flag to ACCESSED.
         //   - A receiver can't be in the process of taking it since we guard the front dummy node with ACCESSED.
-        let front_next = unsafe { &*front.next };
+        let front_next = unsafe { front.next_node() };
 
         let front_next_guard = loop {
             match front_next.flag.try_access() {
@@ -294,12 +294,8 @@ impl<T> ConcurrentBlockingList<T> {
         // released access to all resources.
 
         // Take ownership of front
-
         front.flag.try_take().expect("could not take front node");
-
-        let front = unsafe { Box::from_raw((front as *const Node<T>).cast_mut()) };
-
-        front.inner
+        unsafe { front.swap_take_drop() }
     }
 
     pub fn push_back(&self, data: T) {
@@ -312,7 +308,7 @@ impl<T> ConcurrentBlockingList<T> {
         };
 
         // SAFETY: we have access to dummy_back
-        let back = unsafe { &*dummy_back.next };
+        let back = unsafe { dummy_back.next_node() };
         // this could be the front_dummy, a node. irrelevant
         let back_guard = loop {
             match back.flag.try_access() {
@@ -363,10 +359,29 @@ impl<T> ConcurrentBlockingList<T> {
 #[derive(Debug)]
 struct Node<T> {
     flag: AccessFlag,
-    // This pointer can be dereferenced when the caller has verified that it's impossible
-    // for its corresponding Node to be TAKEN and has set the current flag to ACCESSED.
+    /// This pointer can be dereferenced when the caller has verified that it's impossible
+    /// for its corresponding Node to be TAKEN and has set the current flag to ACCESSED.
     next: *const Node<T>,
     inner: T,
+}
+
+impl<T> Node<T> {
+    /// SAFETY: must never be read while in a TAKEN state
+    unsafe fn next_node(&self) -> &Node<T> {
+        unsafe { &*self.next }
+    }
+
+    /// SAFETY: must have exclusive access to node and
+    /// all pointers to it have been dropped. This node must
+    /// never be used again.
+    unsafe fn swap_take_drop(&self) -> T {
+        let mut front = unsafe { Box::from_raw((self as *const Node<T>).cast_mut()) };
+
+        let mut v: T = unsafe { std::mem::zeroed() };
+
+        std::mem::swap(&mut v, &mut front.inner);
+        v
+    }
 }
 
 #[cfg(test)]
@@ -375,7 +390,42 @@ mod tests {
     use std::thread;
 
     #[test]
-    fn it_works() {
+    fn empty_structure_valid() {
+        let queue = ConcurrentBlockingList::<u8>::new();
+
+        let dummy_front = &queue.dummy_front;
+        assert_eq!(dummy_front.flag.identity(), Identity::Front);
+
+        let dummy_back = unsafe { dummy_front.next_node() };
+        assert_eq!(dummy_back.flag.identity(), Identity::Back);
+
+        let dummy_back_list = &queue.dummy_back;
+        assert_eq!(dummy_back_list.flag.identity(), Identity::Back);
+    }
+
+    #[test]
+    fn structure_valid() {
+        let queue = ConcurrentBlockingList::<u8>::new();
+
+        let v = 5;
+        queue.push_back(v);
+
+        let dummy_front = &queue.dummy_front;
+        assert_eq!(dummy_front.flag.identity(), Identity::Front);
+
+        let front = unsafe { dummy_front.next_node() };
+        assert_eq!(front.flag.identity(), Identity::Node);
+        assert_eq!(front.inner, v);
+
+        let dummy_back = unsafe { front.next_node() };
+        assert_eq!(dummy_back.flag.identity(), Identity::Back);
+
+        let dummy_back_list = &queue.dummy_back;
+        assert_eq!(dummy_back_list.flag.identity(), Identity::Back);
+    }
+
+    #[test]
+    fn queue_works() {
         let msg = 5;
 
         let (tx, rx) = channel::<i32>();

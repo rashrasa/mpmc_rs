@@ -34,7 +34,7 @@ pub struct AccessFlag {
 }
 
 impl AccessFlag {
-    pub fn new(identity: &Identity) -> Self {
+    pub const fn new(identity: &Identity) -> Self {
         let ident = match identity {
             Identity::Front => FRONT,
             Identity::Back => BACK,
@@ -54,7 +54,7 @@ impl AccessFlag {
             Ordering::SeqCst,
             Ordering::SeqCst,
         ) {
-            Ok(_) => Ok(ReleaseGuard { inner: &self.flag }),
+            Ok(_) => Ok(ReleaseGuard { flag: &self }),
             Err(f) => {
                 let access_status = f & ACCESS_MASK;
                 if access_status == ACCESSED {
@@ -107,7 +107,7 @@ impl AccessFlag {
         self.flag.load(Ordering::SeqCst) & IDENT_MASK
     }
 
-    fn ident_from_bits(bits: u8) -> Identity {
+    const fn ident_from_bits(bits: u8) -> Identity {
         match bits {
             NODE => Identity::Node,
             FRONT => Identity::Front,
@@ -124,7 +124,7 @@ impl AccessFlag {
         self.flag.load(Ordering::SeqCst) & ACCESS_MASK
     }
 
-    fn status_from_bits(bits: u8) -> Status {
+    const fn status_from_bits(bits: u8) -> Status {
         match bits {
             RELEASED => Status::Released,
             TAKEN => Status::Taken,
@@ -139,13 +139,13 @@ impl AccessFlag {
 }
 
 pub struct ReleaseGuard<'a> {
-    inner: &'a AtomicU8,
+    flag: &'a AccessFlag,
 }
 
 impl<'a> ReleaseGuard<'a> {
     pub fn release(&self) {
-        let ident = self.inner.load(Ordering::SeqCst) & IDENT_MASK;
-        match self.inner.compare_exchange(
+        let ident = self.flag.ident_bits();
+        match self.flag.flag.compare_exchange(
             ACCESSED | ident,
             RELEASED | ident,
             Ordering::SeqCst,
@@ -228,6 +228,14 @@ mod tests {
     #[should_panic]
     fn take_front_panics() {
         let init_ident = Identity::Front;
+        let node = AccessFlag::new(&init_ident);
+        let _ = node.try_take();
+    }
+
+    #[test]
+    #[should_panic]
+    fn take_back_panics() {
+        let init_ident = Identity::Back;
         let node = AccessFlag::new(&init_ident);
         let _ = node.try_take();
     }
