@@ -47,6 +47,39 @@ fn main() -> anyhow::Result<()> {
         .filter_level(log::LevelFilter::Debug)
         .init();
 
+    let mut v1 = false;
+    let mut v2 = false;
+    let mut v3 = false;
+
+    for arg in std::env::args() {
+        if arg == "v1" {
+            v1 = true;
+        }
+        if arg == "v2" {
+            v2 = true;
+        }
+        if arg == "v3" {
+            v3 = true;
+        }
+    }
+
+    if !v1 && !v2 && !v3 {
+        v1 = true;
+        v2 = true;
+        v3 = true;
+    }
+
+    let mut version_descs = vec![];
+    if v1 {
+        version_descs.push(Version::V1("v1_naive"));
+    }
+    if v2 {
+        version_descs.push(Version::V2("v2_vec_deque"));
+    }
+    if v3 {
+        version_descs.push(Version::V3("v3_lock_free"));
+    }
+
     // version names: tx_rx_sttl_rttl_size
     let configs = vec![
         (
@@ -89,12 +122,6 @@ fn main() -> anyhow::Result<()> {
                 make_payload: || 9u32,
             },
         ),
-    ];
-
-    let version_descs = vec![
-        Version::V1("v1_naive"),
-        Version::V2("v2_vec_deque"),
-        Version::V3("v3_lock_free"),
     ];
 
     info!("Starting benchmark");
