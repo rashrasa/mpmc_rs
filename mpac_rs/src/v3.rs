@@ -3,40 +3,38 @@
 // TODO
 
 mod access_flag;
+mod node;
 
-use std::{
-    ptr::null,
-    sync::{
-        Arc, Condvar, Mutex,
-        atomic::{AtomicUsize, Ordering},
-    },
+use std::sync::{
+    Arc, Condvar, Mutex,
+    atomic::{AtomicUsize, Ordering},
 };
 
 use log::error;
 
 use crate::{
     BlockingReceive, BlockingSend, RecvError, SendError,
-    v3::access_flag::{AccessFlag, Identity},
+    v3::{access_flag::Identity, node::Node},
 };
 
 #[derive(Debug)]
-pub struct Sender<T> {
+pub struct Sender<T: 'static + Send> {
     inner: Arc<ChannelInner<T>>,
 }
 
 #[derive(Debug)]
-pub struct Receiver<T> {
+pub struct Receiver<T: 'static + Send> {
     inner: Arc<ChannelInner<T>>,
 }
 
 #[derive(Debug)]
-struct ChannelInner<T> {
+struct ChannelInner<T: 'static + Send> {
     senders: AtomicUsize,
     receivers: AtomicUsize,
     queue: ConcurrentBlockingList<T>,
 }
 
-impl<T> BlockingReceive<T> for Receiver<T> {
+impl<T: Send + 'static> BlockingReceive<T> for Receiver<T> {
     fn recv(&self) -> Result<T, RecvError> {
         let n_send = self.inner.senders.load(Ordering::SeqCst);
         if n_send == 0 {
@@ -53,7 +51,7 @@ impl<T> BlockingReceive<T> for Receiver<T> {
     }
 }
 
-impl<T: Send> BlockingSend<T> for Sender<T> {
+impl<T: Send + 'static> BlockingSend<T> for Sender<T> {
     fn send(&self, data: T) -> Result<(), SendError<T>> {
         let n_recv = self.inner.receivers.load(Ordering::SeqCst);
         if n_recv == 0 {
@@ -66,7 +64,7 @@ impl<T: Send> BlockingSend<T> for Sender<T> {
 }
 
 #[cfg(feature = "bench")]
-impl<T: Send> crate::BBlockingReceive<T> for Receiver<T> {
+impl<T: Send + 'static> crate::BBlockingReceive<T> for Receiver<T> {
     fn b_recv(&self) -> Result<(T, usize), crate::BRecvError> {
         let n_send = self.inner.senders.load(Ordering::SeqCst);
         let len = *match self.inner.queue.len.0.lock() {
@@ -82,7 +80,7 @@ impl<T: Send> crate::BBlockingReceive<T> for Receiver<T> {
 }
 
 #[cfg(feature = "bench")]
-impl<T: Send> crate::BBlockingSend<T> for Sender<T> {
+impl<T: Send + 'static> crate::BBlockingSend<T> for Sender<T> {
     fn b_send(&self, data: T) -> Result<usize, crate::BSendError<T>> {
         let n_recv = self.inner.receivers.load(Ordering::SeqCst);
         let len = *match self.inner.queue.len.0.lock() {
@@ -98,7 +96,7 @@ impl<T: Send> crate::BBlockingSend<T> for Sender<T> {
     }
 }
 
-impl<T> Clone for Receiver<T> {
+impl<T: 'static + Send> Clone for Receiver<T> {
     fn clone(&self) -> Self {
         self.inner.receivers.fetch_add(1, Ordering::SeqCst);
         Self {
@@ -107,7 +105,7 @@ impl<T> Clone for Receiver<T> {
     }
 }
 
-impl<T> Clone for Sender<T> {
+impl<T: 'static + Send> Clone for Sender<T> {
     fn clone(&self) -> Self {
         self.inner.senders.fetch_add(1, Ordering::SeqCst);
         Self {
@@ -116,19 +114,22 @@ impl<T> Clone for Sender<T> {
     }
 }
 
-impl<T> Drop for Receiver<T> {
+impl<T: 'static + Send> Drop for Receiver<T> {
     fn drop(&mut self) {
         self.inner.receivers.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
-impl<T> Drop for Sender<T> {
+impl<T: 'static + Send> Drop for Sender<T> {
     fn drop(&mut self) {
         self.inner.senders.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
-pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
+pub fn channel<T>() -> (Sender<T>, Receiver<T>)
+where
+    T: 'static + Send,
+{
     let inner = Arc::new(ChannelInner {
         senders: AtomicUsize::new(1),
         receivers: AtomicUsize::new(1),
@@ -164,29 +165,23 @@ unsafe impl<T: Send> Sync for ConcurrentBlockingList<T> {}
 
 // INVARIANT: front and back are never TAKEN
 #[derive(Debug)]
-pub struct ConcurrentBlockingList<T> {
-    dummy_front: Node<T>,
-    dummy_back: Node<T>,
+pub struct ConcurrentBlockingList<T: 'static + Send> {
+    dummy_front: &'static Node<T>,
+    dummy_back: &'static Node<T>,
 
     len: (Mutex<usize>, Condvar),
 }
 
-impl<T> ConcurrentBlockingList<T> {
+impl<T: 'static + Send> ConcurrentBlockingList<T> {
     pub fn new() -> Self {
-        let mut dummy_front = Node {
-            flag: AccessFlag::new(&Identity::Front),
-            next: null(),
-            // SAFETY: front/back nodes are never read
-            inner: unsafe { std::mem::zeroed() },
-        };
+        let dummy_front = Node::new_leaked_front();
+        let dummy_back = Node::new_leaked_back();
 
-        let dummy_back = Node {
-            flag: AccessFlag::new(&Identity::Back),
-            next: &dummy_front as *const Node<T>,
-            // SAFETY: front/back nodes are never read
-            inner: unsafe { std::mem::zeroed() },
-        };
-        dummy_front.next = &dummy_back as *const Node<T>;
+        // SAFETY: We have exclusive access to both
+        unsafe {
+            dummy_back.set_next(dummy_front);
+            dummy_front.set_next(dummy_back);
+        }
 
         Self {
             dummy_front,
@@ -216,9 +211,10 @@ impl<T> ConcurrentBlockingList<T> {
 
         // Mark front as accessed
         // Could be contending with another receiver if len > 1
-        let dummy_front = &self.dummy_front;
+        let dummy_front = self.dummy_front;
         let dummy_front_guard = loop {
-            match dummy_front.flag.try_access() {
+            // SAFETY: Always safe to try_access dummy nodes
+            match unsafe { dummy_front.try_access() } {
                 Ok(g) => break g,
                 Err(_) => {}
             }
@@ -229,7 +225,8 @@ impl<T> ConcurrentBlockingList<T> {
         // but senders never take.
         let front = unsafe { self.dummy_front.next_node() };
 
-        let front_ident = front.flag.identity();
+        // SAFETY: We have exclusive access to front
+        let front_ident = unsafe { front.identity() };
         if front_ident == Identity::Back {
             unreachable!("receiver attempting to take without an element present");
         }
@@ -237,7 +234,9 @@ impl<T> ConcurrentBlockingList<T> {
         // Access the real front node
         // Could be contending with a sender pushing an element here.
         let front_guard = loop {
-            match front.flag.try_access() {
+            // SAFETY: We may have shared access to front with a
+            //         sender, who will never take.
+            match unsafe { front.try_access() } {
                 Ok(g) => break g,
                 Err(_) => {}
             }
@@ -252,7 +251,9 @@ impl<T> ConcurrentBlockingList<T> {
         let front_next = unsafe { front.next_node() };
 
         let front_next_guard = loop {
-            match front_next.flag.try_access() {
+            // SAFETY: We may have shared access to front with a
+            //         sender, who will never take.
+            match unsafe { front_next.try_access() } {
                 Ok(g) => break g,
                 Err(_) => {}
             }
@@ -260,14 +261,18 @@ impl<T> ConcurrentBlockingList<T> {
 
         // now we have taken next. We can update front to be next
 
-        // SAFETY
-        //
-        // We are accessing dummy_front mutably from &self
-        // This is safe since at this point, we haven't released access to dummy_front,
-        // meaning we're the only ones reading/writing to it.
+        // SAFETY: We have exclusive access to dummy_front and front_next
         unsafe {
-            let dummy_front = (dummy_front as *const Node<T>).cast_mut();
-            (*dummy_front).next = front.next;
+            dummy_front.set_next(front_next);
+        }
+
+        // If front_next == dummy_back, it expects to point to this item (also means len == 1 here)
+
+        // SAFETY: we have exclusive access
+        if unsafe { front_next.identity() } == Identity::Back {
+            unsafe {
+                front_next.set_next(dummy_front);
+            }
         }
 
         // Decrement the counter before releasing access.
@@ -293,15 +298,15 @@ impl<T> ConcurrentBlockingList<T> {
         // At this point, we detached the front node from the list and
         // released access to all resources.
 
-        // Take ownership of front
-        front.flag.try_take().expect("could not take front node");
+        // SAFETY: We have exclusive access to front and it does not get dereferenced after the swap_take_drop call
         unsafe { front.swap_take_drop() }
     }
 
     pub fn push_back(&self, data: T) {
         let dummy_back = &self.dummy_back;
         let dummy_back_guard = loop {
-            match dummy_back.flag.try_access() {
+            // SAFETY: Always safe to access a dummy node
+            match unsafe { dummy_back.try_access() } {
                 Ok(g) => break g,
                 Err(_) => {}
             }
@@ -311,28 +316,30 @@ impl<T> ConcurrentBlockingList<T> {
         let back = unsafe { dummy_back.next_node() };
         // this could be the front_dummy, a node. irrelevant
         let back_guard = loop {
-            match back.flag.try_access() {
+            // SAFETY: If this was a node being taken,
+            // we wouldn't have access to dummy_back at this point. We do,
+            // which means a pop is not in progress.
+            match unsafe { back.try_access() } {
                 Ok(g) => break g,
                 Err(_) => {}
             }
         };
 
-        let node = Box::leak(Box::new(Node {
-            inner: data,
-            flag: AccessFlag::new(&Identity::Node),
-            next: dummy_back as *const Node<T>,
-        }));
+        let node = Node::new_leaked_node(data);
 
-        // SAFETY: We have exclusive access to dummy_back.
+        // SAFETY: We have exclusive access to node and dummy_back
         unsafe {
-            let dummy_back = (dummy_back as *const Node<T>).cast_mut();
-            (*dummy_back).next = node as *const Node<T>;
+            node.set_next(dummy_back);
         }
 
-        // SAFETY: We have exclusive access to back.
+        // SAFETY: We have exclusive access to dummy_back and node.
         unsafe {
-            let back = (back as *const Node<T>).cast_mut();
-            (*back).next = node as *const Node<T>;
+            dummy_back.set_next(node);
+        }
+
+        // SAFETY: We have exclusive access to back and node.
+        unsafe {
+            back.set_next(node);
         }
 
         // Before releasing access, update count and wake someone waiting.
@@ -356,34 +363,6 @@ impl<T> ConcurrentBlockingList<T> {
     }
 }
 
-#[derive(Debug)]
-struct Node<T> {
-    flag: AccessFlag,
-    /// This pointer can be dereferenced when the caller has verified that it's impossible
-    /// for its corresponding Node to be TAKEN and has set the current flag to ACCESSED.
-    next: *const Node<T>,
-    inner: T,
-}
-
-impl<T> Node<T> {
-    /// SAFETY: must never be read while in a TAKEN state
-    unsafe fn next_node(&self) -> &Node<T> {
-        unsafe { &*self.next }
-    }
-
-    /// SAFETY: must have exclusive access to node and
-    /// all pointers to it have been dropped. This node must
-    /// never be used again.
-    unsafe fn swap_take_drop(&self) -> T {
-        let mut front = unsafe { Box::from_raw((self as *const Node<T>).cast_mut()) };
-
-        let mut v: T = unsafe { std::mem::zeroed() };
-
-        std::mem::swap(&mut v, &mut front.inner);
-        v
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -394,34 +373,34 @@ mod tests {
         let queue = ConcurrentBlockingList::<u8>::new();
 
         let dummy_front = &queue.dummy_front;
-        assert_eq!(dummy_front.flag.identity(), Identity::Front);
+        assert_eq!(unsafe { dummy_front.identity() }, Identity::Front);
 
         let dummy_back = unsafe { dummy_front.next_node() };
-        assert_eq!(dummy_back.flag.identity(), Identity::Back);
+        assert_eq!(unsafe { dummy_back.identity() }, Identity::Back);
 
         let dummy_back_list = &queue.dummy_back;
-        assert_eq!(dummy_back_list.flag.identity(), Identity::Back);
+        assert_eq!(unsafe { dummy_back_list.identity() }, Identity::Back);
     }
 
     #[test]
-    fn structure_valid() {
+    fn push_back_structure_valid() {
         let queue = ConcurrentBlockingList::<u8>::new();
 
         let v = 5;
         queue.push_back(v);
 
         let dummy_front = &queue.dummy_front;
-        assert_eq!(dummy_front.flag.identity(), Identity::Front);
+        assert_eq!(unsafe { dummy_front.identity() }, Identity::Front);
 
         let front = unsafe { dummy_front.next_node() };
-        assert_eq!(front.flag.identity(), Identity::Node);
-        assert_eq!(front.inner, v);
+        assert_eq!(unsafe { front.identity() }, Identity::Node);
+        assert_eq!(*unsafe { front.read_inner() }, v);
 
         let dummy_back = unsafe { front.next_node() };
-        assert_eq!(dummy_back.flag.identity(), Identity::Back);
+        assert_eq!(unsafe { dummy_back.identity() }, Identity::Back);
 
         let dummy_back_list = &queue.dummy_back;
-        assert_eq!(dummy_back_list.flag.identity(), Identity::Back);
+        assert_eq!(unsafe { dummy_back_list.identity() }, Identity::Back);
     }
 
     #[test]
