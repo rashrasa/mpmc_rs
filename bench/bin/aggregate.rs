@@ -2,6 +2,7 @@ use std::{
     fs::{self, DirEntry},
     io::{BufWriter, Write},
     path::{Path, PathBuf},
+    thread,
     time::Instant,
 };
 
@@ -42,6 +43,7 @@ fn main() -> anyhow::Result<()> {
     fs::create_dir_all(&save_to_root)
         .context(format!("could not create directory {save_to_root:?}"))?;
 
+    let mut handles = vec![];
     for version_entry in
         fs::read_dir(&path).context(format!("could not find directory {path:?}"))?
     {
@@ -62,9 +64,16 @@ fn main() -> anyhow::Result<()> {
             for config_entry in version_path.read_dir().unwrap() {
                 let version_name = version_name.clone();
                 let save_to_root = save_to_root.clone();
-                run_work(config_entry, version_name, save_to_root)?;
+
+                handles.push(thread::spawn(move || {
+                    run_work(config_entry, version_name, save_to_root)
+                }))
             }
         }
+    }
+
+    for handle in handles {
+        handle.join().unwrap()?;
     }
 
     debug!("ran aggregation in {:.2}s", start.elapsed().as_secs_f64());
