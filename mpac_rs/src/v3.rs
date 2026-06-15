@@ -366,7 +366,7 @@ impl<T: 'static + Send> ConcurrentBlockingList<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::thread;
+    use std::{thread, time::Instant};
 
     #[test]
     fn empty_structure_valid() {
@@ -447,5 +447,38 @@ mod tests {
         let result = t1.join().unwrap();
 
         assert_eq!(n * msg, result);
+    }
+
+    #[test]
+    fn n_seconds_aggregated() {
+        let start = Instant::now();
+        let seconds = 3.0;
+        let msg = 5.0;
+
+        let (tx, rx) = channel();
+
+        let t0 = thread::spawn(move || {
+            let start = start.clone();
+            let mut sent = 0.0;
+            while Instant::now().duration_since(start).as_secs_f64() < seconds {
+                tx.send(msg).unwrap();
+                sent += msg;
+            }
+            sent
+        });
+
+        let t1 = thread::spawn(move || {
+            let mut received = 0.0;
+
+            while let Ok(v) = rx.recv() {
+                received += v;
+            }
+            received
+        });
+
+        let sent = t0.join().unwrap();
+        let received = t1.join().unwrap();
+
+        assert_eq!(sent, received);
     }
 }
