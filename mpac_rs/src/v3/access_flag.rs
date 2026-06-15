@@ -224,6 +224,8 @@ mod tests {
         assert_eq!(init_ident, node.identity());
         drop(guard);
         assert_eq!(init_ident, node.identity());
+        while let Err(_) = node.try_declare_take() {}
+        assert_eq!(init_ident, node.identity());
         while let Err(_) = node.try_take() {}
         assert_eq!(init_ident, node.identity());
     }
@@ -241,6 +243,10 @@ mod tests {
 
         drop(guard);
         assert_eq!(Status::Released, node.status());
+
+        node.try_declare_take()
+            .expect("could not declare taking flag while released");
+        assert_eq!(Status::DeclareTake, node.status());
 
         node.try_take().expect("could not take flag while released");
         assert_eq!(Status::Taken, node.status());

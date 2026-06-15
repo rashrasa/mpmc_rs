@@ -22,7 +22,8 @@ pub struct Aggregation {
     pub start: f64,
     pub end: f64,
 
-    pub sorted_backpressure_values: Vec<(f64, u64)>,
+    pub backpressure_values: Vec<(f64, u64)>,
+    pub max_backpressure: u64,
 
     pub aggregation_period_s: f64,
     pub n_windows: usize,
@@ -32,6 +33,7 @@ pub struct Aggregation {
     pub data_latency: Vec<DistributionMetric>,
 
     pub throughput: Vec<GaugeMetric>,
+    pub max_throughput: f64,
 }
 
 #[derive(Clone)]
@@ -229,13 +231,30 @@ impl Aggregation {
         if empty > 0 {
             warn!("found {} skipped event ids", empty);
         }
+
         backpressure.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+
+        let throughput = lazy_throughput
+            .generate_gauged()
+            .context("failed to generate aggregation for throughput metric")?;
+
+        let backpressure = dedupe_bp_values(backpressure);
+        let max_bp = backpressure.iter().fold(0, |a, b| a.max(b.1));
+
+        let max_tp = throughput.iter().fold(f64::MIN, |a, b| {
+            if let GaugeMetric::Gauge { value, .. } = b {
+                a.max(*value)
+            } else {
+                a
+            }
+        });
 
         Ok(Aggregation {
             start: start,
             end: end,
 
-            sorted_backpressure_values: backpressure,
+            backpressure_values: backpressure,
+            max_backpressure: max_bp,
 
             aggregation_period_s,
             n_windows: lazy_send_delay.n_buckets(),
@@ -248,9 +267,8 @@ impl Aggregation {
             data_latency: lazy_latency
                 .generate()
                 .context("failed to generate aggregation for latency metric")?,
-            throughput: lazy_throughput
-                .generate_gauged()
-                .context("failed to generate aggregation for throughput metric")?,
+            throughput,
+            max_throughput: max_tp,
         })
     }
 }
@@ -290,4 +308,26 @@ fn next_binary_row(mut r: impl Read) -> std::io::Result<(f64, f64, u64, u64)> {
                 .expect("conversion failed"),
         ),
     ))
+}
+
+fn dedupe_bp_values(backpressure: Vec<(f64, u64)>) -> Vec<(f64, u64)> {
+    let bp_n = backpressure.len();
+    if bp_n > 0 {
+        let mut vec = Vec::with_capacity(bp_n);
+
+        let mut backpressure_iter = backpressure.into_iter();
+        let (mut last_t, mut last_v) = backpressure_iter.next().unwrap();
+
+        for (t, v) in backpressure_iter {
+            if last_t != t {
+                vec.push((last_t, last_v));
+                last_t = t;
+                last_v = v;
+            }
+            last_v = last_v.max(v);
+        }
+        vec
+    } else {
+        vec![]
+    }
 }

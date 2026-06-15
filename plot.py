@@ -17,26 +17,29 @@ for p in path.Path("output/aggregation").iterdir():
         config = data["config"]
         if grouped.get(config) is None:
             grouped[config] = []
-        grouped[config].append((data["version"], data["aggregation"]["throughput"], data["aggregation"]["sorted_backpressure_values"],))
+        grouped[config].append((
+            data["version"],
+            data["aggregation"]["throughput"],
+            data["aggregation"]["backpressure_values"],
+            data["aggregation"]["max_backpressure"],
+            data["aggregation"]["max_throughput"],
+        ))
 
 global_bp_max = 0
 global_tp_max = 0
 for series in grouped.values():
-    for _,buckets,bp_values in series:
-        for _, val in bp_values:
-            global_bp_max = max(global_bp_max, val)
-        for b in buckets:
-            if b.get("Gauge"):
-                global_tp_max = max(global_tp_max, b["Gauge"]["value"])
+    for _,_,_,bp,tp in series:
+        global_bp_max = max(global_bp_max, bp)
+        global_tp_max = max(global_tp_max, tp)
 
 for config, series in grouped.items():
     fig = make_subplots(
         rows=len(series),
         cols=1,
-        subplot_titles=[version for version,_,_ in series],
+        subplot_titles=[version for version,_,_,_,_ in series],
         specs = [[{"secondary_y":True}] for _ in series]
     )
-    for i, (version, buckets, bp_values) in enumerate(series):
+    for i, (version, buckets, bp_values, _, _) in enumerate(series):
         times = []
         values = []
         for b in buckets:
