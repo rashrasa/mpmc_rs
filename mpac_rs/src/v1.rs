@@ -23,7 +23,7 @@ struct ChannelInner<T> {
     queue: Vec<T>,
 }
 
-impl<T> BlockingReceive<T> for Receiver<T> {
+impl<T: Send> BlockingReceive<T> for Receiver<T> {
     fn recv(&self) -> Result<T, RecvError> {
         loop {
             {
@@ -50,7 +50,7 @@ impl<T> BlockingReceive<T> for Receiver<T> {
 }
 
 #[cfg(feature = "bench")]
-impl<T> crate::BBlockingReceive<T> for Receiver<T> {
+impl<T: Send> crate::BBlockingReceive<T> for Receiver<T> {
     fn b_recv(&self) -> Result<(T, usize), crate::BRecvError> {
         loop {
             {
@@ -170,12 +170,12 @@ pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
 #[cfg(feature = "bench")]
 pub struct V1Maker;
 #[cfg(feature = "bench")]
-impl crate::ChannelMaker for V1Maker {
+impl crate::BChannelMaker for V1Maker {
     fn channel<T>(
         &self,
     ) -> (
-        impl crate::BBlockingSend<T> + Send + 'static,
-        impl crate::BBlockingReceive<T> + Send + 'static,
+        impl crate::BBlockingSend<T> + Send + Clone + 'static,
+        impl crate::BBlockingReceive<T> + Send + Clone + 'static,
     )
     where
         T: Send + 'static,

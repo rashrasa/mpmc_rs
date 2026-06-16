@@ -10,28 +10,27 @@ pub enum RecvError {
 
 pub trait BlockingSend<T>
 where
-    Self: Clone + Send,
+    T: Send,
 {
     fn send(&self, data: T) -> Result<(), SendError<T>>;
 }
 
 pub trait BlockingReceive<T>
 where
-    Self: Clone,
+    T: Send,
 {
     fn recv(&self) -> Result<T, RecvError>;
 }
 
 #[cfg(feature = "bench")]
-pub trait ChannelMaker {
+pub trait BChannelMaker {
     fn channel<T>(
         &self,
     ) -> (
-        impl BBlockingSend<T> + Send + 'static,
-        impl BBlockingReceive<T> + Send + 'static,
+        impl BBlockingSend<T> + Send + Clone + 'static,
+        impl BBlockingReceive<T> + Send + Clone + 'static,
     )
     where
-        Self: Sized,
         T: Send + 'static;
 }
 
@@ -49,14 +48,16 @@ pub enum BRecvError {
 #[cfg(feature = "bench")]
 pub trait BBlockingSend<T>
 where
-    Self: Clone + BlockingSend<T>,
+    Self: BlockingSend<T>,
+    T: Send,
 {
     fn b_send(&self, data: T) -> Result<usize, BSendError<T>>;
 }
 #[cfg(feature = "bench")]
 pub trait BBlockingReceive<T>
 where
-    Self: Clone + BlockingReceive<T>,
+    Self: BlockingReceive<T>,
+    T: Send,
 {
     fn b_recv(&self) -> Result<(T, usize), BRecvError>;
 }
@@ -78,5 +79,11 @@ mod v3;
 
 #[cfg(feature = "bench")]
 pub mod v3;
+
+#[cfg(not(feature = "bench"))]
+mod v4;
+
+#[cfg(feature = "bench")]
+pub mod v4;
 
 pub use v2::*;

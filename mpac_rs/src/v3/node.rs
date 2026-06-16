@@ -11,36 +11,36 @@ pub struct Node<T> {
     inner: T,
 }
 
-impl<T: 'static + Send> Node<T> {
-    pub fn new_leaked_node(data: T) -> &'static mut Self {
-        Box::leak(Box::new(Node {
+impl<T: Send> Node<T> {
+    pub fn new_node(data: T) -> Self {
+        Node {
             inner: data,
             flag: AccessFlag::new(&Identity::Node),
             next: null(),
-        }))
+        }
     }
 
-    pub fn new_leaked_front() -> &'static mut Self {
-        Box::leak(Box::new(Node {
+    pub fn new_front() -> Self {
+        Node {
             inner: unsafe { std::mem::zeroed() },
             flag: AccessFlag::new(&Identity::Front),
             next: null(),
-        }))
+        }
     }
 
-    pub fn new_leaked_back() -> &'static mut Self {
-        Box::leak(Box::new(Node {
+    pub fn new_back() -> Self {
+        Node {
             inner: unsafe { std::mem::zeroed() },
             flag: AccessFlag::new(&Identity::Back),
             next: null(),
-        }))
+        }
     }
 
     /// SAFETY: Must already have access to self and next.
-    pub unsafe fn set_next(&self, next: &Node<T>) {
+    pub unsafe fn set_next(&self, next: *const Node<T>) {
         unsafe {
             let node = (self as *const Node<T>).cast_mut();
-            (*node).next = next as *const Node<T>;
+            (*node).next = next;
         }
     }
 
@@ -90,9 +90,9 @@ mod tests {
 
     #[test]
     fn manual_structure_valid() {
-        let node = Node::new_leaked_node(5);
-        let front = Node::new_leaked_front();
-        let back = Node::new_leaked_back();
+        let node = Box::leak(Box::new(Node::new_node(5)));
+        let front = Box::leak(Box::new(Node::new_front()));
+        let back = Box::leak(Box::new(Node::new_back()));
 
         // SAFETY: We have exclusive access to all 3.
         unsafe {
@@ -104,5 +104,13 @@ mod tests {
         assert_eq!(Identity::Front, front.flag.identity());
         assert_eq!(Identity::Back, back.flag.identity());
         assert_eq!(Identity::Node, node.flag.identity());
+
+        // SAFETY: we own all 3
+        unsafe {
+            // Free up resources, unlikely to actually be needed since OS takes care of it
+            Box::from_raw(front);
+            Box::from_raw(back);
+            Box::from_raw(node);
+        }
     }
 }

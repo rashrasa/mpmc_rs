@@ -146,11 +146,11 @@ fn main() -> anyhow::Result<()> {
             let runner = runner.spawn_runner(format!("config_{}", config_desc));
 
             match v {
-                Version::V1(_) => run_bench_1(&runner, &V1Maker, config.clone())
+                Version::V1(_) => run_bench_1(&runner, V1Maker, config.clone())
                     .context("failed to run benchmark 1")?,
-                Version::V2(_) => run_bench_1(&runner, &V2Maker, config.clone())
+                Version::V2(_) => run_bench_1(&runner, V2Maker, config.clone())
                     .context("failed to run benchmark 1")?,
-                Version::V3(_) => run_bench_1(&runner, &V3Maker, config.clone())
+                Version::V3(_) => run_bench_1(&runner, V3Maker, config.clone())
                     .context("failed to run benchmark 1")?,
             }
 
