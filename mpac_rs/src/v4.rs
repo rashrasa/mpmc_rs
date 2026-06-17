@@ -3,18 +3,24 @@
 // - Connections are made through indices instead of pointers
 // - Instead of dummy nodes at the ends, connections can also be an enum value (like Front, Back)
 
-use std::marker::PhantomData;
+mod queue;
 
-use crate::{BlockingReceive, BlockingSend, RecvError, SendError};
+use std::sync::Arc;
+
+use crate::{BlockingReceive, BlockingSend, RecvError, SendError, v4::queue::AtomicQueue};
 
 #[derive(Debug)]
 pub struct Sender<T> {
-    _marker: PhantomData<T>,
+    inner: Arc<AtomicQueue<T>>,
 }
 
 #[derive(Debug)]
 pub struct Receiver<T> {
-    _marker: PhantomData<T>,
+    inner: Arc<AtomicQueue<T>>,
+}
+
+struct ChannelInner<T> {
+    data: AtomicQueue<T>,
 }
 
 impl<T: Send> BlockingReceive<T> for Receiver<T> {
