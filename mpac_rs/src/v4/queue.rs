@@ -1,12 +1,13 @@
 use std::{
     cell::UnsafeCell,
+    collections::HashMap,
     sync::{
         Arc, Condvar, Mutex,
         atomic::{AtomicIsize, AtomicUsize, Ordering},
     },
 };
 
-use log::warn;
+use log::{debug, warn};
 
 use crate::{
     LogAndLock,
@@ -89,8 +90,8 @@ impl<T> AtomicQueue<T> {
 
             access: AccessTracker {
                 status: Arc::new(AtomicStatus::new(status)),
-                readers: Mutex::new(Vec::with_capacity(5)),
-                writers: Mutex::new(Vec::with_capacity(5)),
+                readers: Mutex::new(HashMap::with_capacity(5)),
+                writers: Mutex::new(HashMap::with_capacity(5)),
             },
         }
     }
@@ -108,29 +109,24 @@ impl<T> AtomicQueue<T> {
             action: AtomicAction::new(Action::Idle),
         });
 
-        queue
-            .access
-            .readers
-            .lock()
-            .log_and_lock()
-            .push(Arc::clone(&desc));
+        let mut map = queue.access.readers.lock().log_and_lock();
 
-        ReaderAccessHandle { queue, desc }
+        let key = map.len();
+        map.insert(key, Arc::clone(&desc));
+        drop(map);
+        ReaderAccessHandle { queue, desc, key }
     }
 
     pub fn writer(queue: Arc<AtomicQueue<T>>) -> WriterAccessHandle<T> {
         let desc = Arc::new(AccessDescriptor {
             action: AtomicAction::new(Action::Idle),
         });
+        let mut map = queue.access.writers.lock().log_and_lock();
+        let key = map.len();
 
-        queue
-            .access
-            .writers
-            .lock()
-            .log_and_lock()
-            .push(Arc::clone(&desc));
-
-        WriterAccessHandle { queue, desc }
+        map.insert(key, Arc::clone(&desc));
+        drop(map);
+        WriterAccessHandle { queue, desc, key }
     }
 
     fn reallocate(vec: &mut Vec<Location<T>>, start: usize, end: usize, cap: usize) {
@@ -216,8 +212,8 @@ struct AccessTracker {
     // declaring a resize being needed
     status: Arc<AtomicStatus>,
 
-    readers: Mutex<Vec<Arc<AccessDescriptor>>>,
-    writers: Mutex<Vec<Arc<AccessDescriptor>>>,
+    readers: Mutex<HashMap<usize, Arc<AccessDescriptor>>>,
+    writers: Mutex<HashMap<usize, Arc<AccessDescriptor>>>,
 }
 
 // For the Queue
@@ -233,6 +229,7 @@ struct AccessDescriptor {
 pub struct ReaderAccessHandle<T> {
     queue: Arc<AtomicQueue<T>>,
     desc: Arc<AccessDescriptor>,
+    key: usize,
 }
 
 impl<T> ReaderAccessHandle<T> {
@@ -290,20 +287,27 @@ impl<T> ReaderAccessHandle<T> {
 pub struct WriterAccessHandle<T> {
     queue: Arc<AtomicQueue<T>>,
     desc: Arc<AccessDescriptor>,
+    key: usize,
 }
 
 impl<T> WriterAccessHandle<T> {
     fn exclusive(&self, original_status: Status) -> ExclusiveGuard<'_, T> {
+        debug!("waiting to acquire exclusive access");
         // prevent creating / dropping readers and writers
         let readers = self.queue.access.readers.lock().log_and_lock();
-        let writers = self.queue.access.readers.lock().log_and_lock();
+        let writers = self.queue.access.writers.lock().log_and_lock();
 
         let mut waiting = 0;
 
-        for reader in readers.iter() {
+        let mut old_reader_actions = vec![];
+        let mut old_writer_actions = vec![];
+
+        debug!("waiting on readers");
+        for (key, reader) in readers.iter() {
+            let mut ex_action = Action::Idle;
             loop {
                 match reader.action.compare_exchange_weak(
-                    Action::Idle,
+                    ex_action,
                     Action::ExternallyBlocked,
                     Ordering::SeqCst,
                     Ordering::SeqCst,
@@ -312,6 +316,7 @@ impl<T> WriterAccessHandle<T> {
                     Err(e) => match e {
                         Action::ResizeRequested => {
                             warn!("a reader requested a resize");
+                            ex_action = Action::ResizeRequested;
                             continue;
                         }
                         Action::Idle | Action::Reading => {
@@ -328,12 +333,15 @@ impl<T> WriterAccessHandle<T> {
                     },
                 }
             }
+            old_reader_actions.push((*key, ex_action));
         }
 
-        for writer in writers.iter() {
+        debug!("waiting on writers");
+        for (key, writer) in writers.iter() {
+            let mut ex_action = Action::Idle;
             loop {
                 match writer.action.compare_exchange_weak(
-                    Action::Idle,
+                    ex_action,
                     Action::ExternallyBlocked,
                     Ordering::SeqCst,
                     Ordering::SeqCst,
@@ -342,7 +350,9 @@ impl<T> WriterAccessHandle<T> {
                     Err(e) => match e {
                         Action::ResizeRequested => {
                             // here, we have detected ourselves
+                            ex_action = Action::ResizeRequested;
                             waiting += 1;
+                            continue;
                         }
                         Action::Idle | Action::Writing => {
                             continue;
@@ -358,6 +368,7 @@ impl<T> WriterAccessHandle<T> {
                     },
                 }
             }
+            old_writer_actions.push((*key, ex_action));
         }
 
         if waiting != 1 {
@@ -373,11 +384,18 @@ impl<T> WriterAccessHandle<T> {
             inner: &self.queue,
             buf: queue,
             original_status,
+            old_reader_actions,
+            old_writer_actions,
         }
     }
 
     pub fn request_resize_block(&self) {
+        debug!("resize requested");
         let mut status = self.queue.access.status.load(Ordering::SeqCst);
+        if status.code() == Status::WaitingToResize.code() {
+            self.wait_for_ongoing_resize();
+            return;
+        }
         loop {
             match self.queue.access.status.compare_exchange_weak(
                 status,
@@ -404,21 +422,35 @@ impl<T> WriterAccessHandle<T> {
                     }
                     Status::WaitingToResize => {
                         // we are not the ones to update the value, we should wait for the resize to complete.
-                        loop {
-                            let new_status = self.queue.access.status.load(Ordering::SeqCst);
-
-                            // status was restored
-                            if status.code() == new_status.code() {
-                                break;
-                            }
-
-                            // TODO: Implement waking mechanism
-                            std::hint::spin_loop();
-                        }
+                        self.wait_for_ongoing_resize()
                     }
                 },
             }
         }
+    }
+
+    fn wait_for_ongoing_resize(&self) {
+        // TODO: potential source of issues, we are ignoring what the
+        // old action was and it may be relevant to how we wait.
+        let action = &self.desc.action;
+        let old_action = action.load(Ordering::SeqCst);
+
+        action.store(Action::Idle, Ordering::SeqCst);
+        loop {
+            let new_status = self.queue.access.status.load(Ordering::SeqCst);
+
+            // status was restored
+            match new_status {
+                Status::Uninitialized => unreachable!("resize resulted in an Uninitialized status"),
+                Status::Active => break,
+                Status::WaitingToResize => {}
+            }
+
+            // TODO: Implement waking mechanism
+            std::hint::spin_loop();
+        }
+
+        action.store(old_action, Ordering::SeqCst);
     }
 
     pub fn push(&self, data: T) {
@@ -482,14 +514,39 @@ impl<T> WriterAccessHandle<T> {
     }
 }
 
+impl<T> Drop for WriterAccessHandle<T> {
+    fn drop(&mut self) {
+        self.queue
+            .access
+            .writers
+            .lock()
+            .log_and_lock()
+            .remove(&self.key);
+    }
+}
+
+impl<T> Drop for ReaderAccessHandle<T> {
+    fn drop(&mut self) {
+        self.queue
+            .access
+            .readers
+            .lock()
+            .log_and_lock()
+            .remove(&self.key);
+    }
+}
+
 pub struct ExclusiveGuard<'a, T> {
     inner: &'a AtomicQueue<T>,
     buf: &'a mut Vec<Location<T>>,
     original_status: Status,
+    old_writer_actions: Vec<(usize, Action)>,
+    old_reader_actions: Vec<(usize, Action)>,
 }
 
 impl<T> ExclusiveGuard<'_, T> {
     pub fn reallocate(&mut self, cap: usize) {
+        debug!("reallocating");
         let old_len = self.buf.len();
         let start = self.inner.start.load(Ordering::SeqCst) as usize % old_len;
         let end = self.inner.end.load(Ordering::SeqCst) as usize % old_len;
@@ -497,6 +554,23 @@ impl<T> ExclusiveGuard<'_, T> {
     }
 
     pub fn release(&mut self) {
+        debug!("restoring reader and writer states");
+        // shouldnt deadlock since our exclusivity mechanism is the status flag on the queue
+        let readers = self.inner.access.readers.lock().log_and_lock();
+        for (key, action) in self.old_reader_actions.iter() {
+            let desc = &readers[key];
+            desc.action.store(*action, Ordering::SeqCst);
+        }
+        drop(readers);
+
+        let writers = self.inner.access.writers.lock().log_and_lock();
+        for (key, action) in self.old_writer_actions.iter() {
+            let desc = &writers[key];
+            desc.action.store(*action, Ordering::SeqCst);
+        }
+        drop(writers);
+
+        debug!("releasing exclusive guard");
         let status = self.inner.access.status.load(Ordering::SeqCst);
         match status {
             Status::Uninitialized | Status::Active => {

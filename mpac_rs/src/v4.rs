@@ -12,6 +12,8 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
+use log::debug;
+
 use crate::{
     BlockingReceive, BlockingSend, RecvError, SendError,
     v4::queue::{AtomicQueue, ReaderAccessHandle, WriterAccessHandle},
@@ -38,15 +40,23 @@ struct ChannelInner<T> {
 
 impl<T: Send> BlockingReceive<T> for Receiver<T> {
     fn recv(&self) -> Result<T, RecvError> {
-        Ok(self.handle.pop_front_wait())
+        if self.channel.senders.load(Ordering::SeqCst) == 0 && self.handle.len() == 0 {
+            Err(RecvError::Closed)
+        } else {
+            Ok(self.handle.pop_front_wait())
+        }
     }
 }
 
 impl<T: Send> BlockingSend<T> for Sender<T> {
     fn send(&self, data: T) -> Result<(), SendError<T>> {
-        self.handle.push(data);
+        if self.channel.receivers.load(Ordering::SeqCst) == 0 {
+            Err(SendError::Closed(data))
+        } else {
+            self.handle.push(data);
 
-        Ok(())
+            Ok(())
+        }
     }
 }
 
@@ -100,18 +110,22 @@ impl<T> Clone for Sender<T> {
 
 impl<T> Drop for Receiver<T> {
     fn drop(&mut self) {
-        self.channel.receivers.fetch_sub(1, Ordering::SeqCst);
+        let receivers = self.channel.receivers.fetch_sub(1, Ordering::SeqCst);
+        debug!("Receiver count: {}", receivers - 1);
     }
 }
 
 impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
-        self.channel.senders.fetch_sub(1, Ordering::SeqCst);
+        let senders = self.channel.senders.fetch_sub(1, Ordering::SeqCst);
+
+        #[cfg(feature = "bench")]
+        debug!("Sender count: {}", senders - 1);
     }
 }
 
 pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
-    let queue = Arc::new(AtomicQueue::with_capacity(25));
+    let queue = Arc::new(AtomicQueue::with_capacity(50_000_000));
     let tx_handle = AtomicQueue::writer(Arc::clone(&queue));
     let rx_handle = AtomicQueue::reader(Arc::clone(&queue));
 
