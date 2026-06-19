@@ -86,4 +86,23 @@ mod v4;
 #[cfg(feature = "bench")]
 pub mod v4;
 
+use std::sync::{LockResult, MutexGuard};
+
+use log::error;
 pub use v2::*;
+
+pub(crate) trait LogAndLock<'a, T> {
+    fn log_and_lock(self) -> MutexGuard<'a, T>;
+}
+
+impl<'a, T> LogAndLock<'a, T> for LockResult<MutexGuard<'a, T>> {
+    fn log_and_lock(self) -> MutexGuard<'a, T> {
+        match self {
+            Ok(l) => l,
+            Err(p) => {
+                error!("a thread panicked while holding a lock {}", p);
+                p.into_inner()
+            }
+        }
+    }
+}
