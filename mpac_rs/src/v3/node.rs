@@ -45,8 +45,13 @@ impl<T: Send> Node<T> {
     }
 
     /// SAFETY: must never be read while in a TAKEN state
-    pub unsafe fn next_node(&self) -> &Node<T> {
-        unsafe { &*self.next }
+    pub unsafe fn next_node(&self) -> Option<&Node<T>> {
+        let ptr = self.next;
+        if ptr.is_null() {
+            None
+        } else {
+            unsafe { Some(&*ptr) }
+        }
     }
 
     /// SAFETY: must have exclusive access to node and

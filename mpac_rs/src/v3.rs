@@ -239,7 +239,7 @@ impl<T: Send> ConcurrentBlockingList<T> {
         // SAFETY: We have access to dummy front. No other receiver will get through.
         // A sender may be in the middle of updating its next pointer
         // but senders never take.
-        let front = unsafe { self.dummy_front.next_node() };
+        let front = unsafe { self.dummy_front.next_node() }.unwrap();
 
         // SAFETY: We have exclusive access to front
         let front_ident = unsafe { front.identity() };
@@ -267,7 +267,7 @@ impl<T: Send> ConcurrentBlockingList<T> {
         //   - A sender may have access to it to update its next pointer.
         //     In this case, we just have to wait until we can update the access flag to ACCESSED.
         //   - A receiver can't be in the process of taking it since we guard the front dummy node with ACCESSED.
-        let front_next = unsafe { front.next_node() };
+        let front_next = unsafe { front.next_node() }.unwrap();
 
         // DEADLOCK: len == 1, recv holds dummy_front + front, send holds dummy_back
         // recv waits for dummy_back, send waits for front.
@@ -339,7 +339,7 @@ impl<T: Send> ConcurrentBlockingList<T> {
             };
 
             // SAFETY: we have access to dummy_back
-            let back = unsafe { dummy_back.next_node() };
+            let back = unsafe { dummy_back.next_node() }.unwrap();
             // this could be the front_dummy, a node. all irrelevant
 
             let back_guard = loop {
@@ -413,7 +413,7 @@ mod tests {
         let dummy_front = &queue.dummy_front;
         assert_eq!(unsafe { dummy_front.identity() }, Identity::Front);
 
-        let dummy_back = unsafe { dummy_front.next_node() };
+        let dummy_back = unsafe { dummy_front.next_node() }.unwrap();
         assert_eq!(unsafe { dummy_back.identity() }, Identity::Back);
 
         let dummy_back_list = &queue.dummy_back;
@@ -430,11 +430,11 @@ mod tests {
         let dummy_front = &queue.dummy_front;
         assert_eq!(unsafe { dummy_front.identity() }, Identity::Front);
 
-        let front = unsafe { dummy_front.next_node() };
+        let front = unsafe { dummy_front.next_node() }.unwrap();
         assert_eq!(unsafe { front.identity() }, Identity::Node);
         assert_eq!(*unsafe { front.read_inner() }, v);
 
-        let dummy_back = unsafe { front.next_node() };
+        let dummy_back = unsafe { front.next_node() }.unwrap();
         assert_eq!(unsafe { dummy_back.identity() }, Identity::Back);
 
         let dummy_back_list = &queue.dummy_back;
