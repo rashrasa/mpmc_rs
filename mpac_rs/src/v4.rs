@@ -40,10 +40,11 @@ struct ChannelInner<T> {
 
 impl<T: Send> BlockingReceive<T> for Receiver<T> {
     fn recv(&self) -> Result<T, RecvError> {
-        if self.channel.senders.load(Ordering::SeqCst) == 0 && self.handle.len() == 0 {
-            Err(RecvError::Closed)
-        } else {
-            Ok(self.handle.pop_front_wait())
+        match self.handle.pop_front_wait() {
+            Ok(v) => Ok(v),
+            Err(e) => match e {
+                queue::ReaderError::NoWriters => Err(RecvError::Closed),
+            },
         }
     }
 }
@@ -125,7 +126,7 @@ impl<T> Drop for Sender<T> {
 }
 
 pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
-    let queue = Arc::new(AtomicQueue::with_capacity(50_000_000));
+    let queue = Arc::new(AtomicQueue::with_capacity(5));
     let tx_handle = AtomicQueue::writer(Arc::clone(&queue));
     let rx_handle = AtomicQueue::reader(Arc::clone(&queue));
 
@@ -163,5 +164,56 @@ impl crate::BChannelMaker for V4Maker {
         T: Send + 'static,
     {
         channel()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Properties to verify:
+    // - Channel Closing: senders drop + empty / receivers drop
+    // - No values are lost
+
+    use super::*;
+
+    #[test]
+    fn senders_drop_empty_closes() {
+        let msg = 32;
+        let n = 500;
+        let (tx, rx) = channel::<i32>();
+        {
+            let tx = tx;
+            let handles: Vec<_> = (0..n)
+                .map(|_| {
+                    let tx = tx.clone();
+                    std::thread::spawn(move || tx.send(msg).unwrap())
+                })
+                .collect();
+
+            for handle in handles {
+                handle.join().unwrap();
+            }
+        }
+        let mut sum = 0;
+        while let Ok(v) = rx.recv() {
+            sum += v;
+        }
+        assert_eq!(msg * n, sum)
+    }
+
+    #[test]
+    fn receivers_drop_closes() {
+        let (tx, rx) = channel::<i32>();
+
+        tx.send(2).unwrap();
+
+        let v0 = rx.recv().unwrap();
+
+        assert_eq!(2, v0);
+
+        drop(tx);
+
+        let err = rx.recv().unwrap_err();
+
+        assert_eq!(RecvError::Closed, err);
     }
 }

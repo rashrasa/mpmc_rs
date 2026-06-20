@@ -108,9 +108,9 @@ mod tests {
         // SAFETY: we own all 3
         unsafe {
             // Free up resources, unlikely to actually be needed since OS takes care of it
-            Box::from_raw(front);
-            Box::from_raw(back);
-            Box::from_raw(node);
+            let _ = Box::from_raw(front);
+            let _ = Box::from_raw(back);
+            let _ = Box::from_raw(node);
         }
     }
 }

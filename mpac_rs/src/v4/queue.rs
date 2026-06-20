@@ -2,7 +2,7 @@ use std::{
     cell::UnsafeCell,
     collections::HashMap,
     sync::{
-        Arc, Condvar, Mutex,
+        Arc, Condvar, Mutex, MutexGuard,
         atomic::{AtomicIsize, AtomicUsize, Ordering},
     },
 };
@@ -32,7 +32,8 @@ use crate::{
 /// flag for each memory location, and start/end indexes.
 ///
 /// The point of this queue is to sacrifice memory efficiency
-/// and tail latency for amortized throughput.
+/// and tail latency for amortized throughput while also meeting the
+/// constraint of being unbounded and MPMC.
 pub struct AtomicQueue<T> {
     // Allocations only happen when a call stack
     // has exclusive control.
@@ -45,7 +46,8 @@ pub struct AtomicQueue<T> {
     start: AtomicIsize,
     end: AtomicIsize,
 
-    len: AtomicUsize,
+    // HACK: avoids underflow
+    len: AtomicIsize,
 
     access: AccessTracker,
 }
@@ -86,12 +88,18 @@ impl<T> AtomicQueue<T> {
             start: AtomicIsize::new(0),
             end: AtomicIsize::new(0),
 
-            len: AtomicUsize::new(0),
+            len: AtomicIsize::new(0),
 
             access: AccessTracker {
                 status: Arc::new(AtomicStatus::new(status)),
                 readers: Mutex::new(HashMap::with_capacity(5)),
                 writers: Mutex::new(HashMap::with_capacity(5)),
+
+                reader_ids: AtomicUsize::new(0),
+                writer_ids: AtomicUsize::new(0),
+
+                n_readers: AtomicIsize::new(0),
+                n_writers: AtomicIsize::new(0),
             },
         }
     }
@@ -111,9 +119,11 @@ impl<T> AtomicQueue<T> {
 
         let mut map = queue.access.readers.lock().log_and_lock();
 
-        let key = map.len();
+        let key = queue.access.reader_ids.fetch_add(1, Ordering::SeqCst);
         map.insert(key, Arc::clone(&desc));
         drop(map);
+
+        queue.access.n_readers.fetch_add(1, Ordering::SeqCst);
         ReaderAccessHandle { queue, desc, key }
     }
 
@@ -122,10 +132,12 @@ impl<T> AtomicQueue<T> {
             action: AtomicAction::new(Action::Idle),
         });
         let mut map = queue.access.writers.lock().log_and_lock();
-        let key = map.len();
+        let key = queue.access.writer_ids.fetch_add(1, Ordering::SeqCst);
 
         map.insert(key, Arc::clone(&desc));
         drop(map);
+
+        queue.access.n_writers.fetch_add(1, Ordering::SeqCst);
         WriterAccessHandle { queue, desc, key }
     }
 
@@ -178,7 +190,7 @@ struct Location<T> {
 }
 
 impl<T> Location<T> {
-    fn take(&self) -> T {
+    fn take_wait(&self) -> T {
         let mut inner = self.inner.lock().log_and_lock();
 
         while inner.is_none() {
@@ -188,6 +200,15 @@ impl<T> Location<T> {
         let v = inner
             .take()
             .expect("unexpected None value after waiting for Some");
+        drop(inner);
+        self.waker.notify_one();
+
+        v
+    }
+
+    fn try_take(&self) -> Option<T> {
+        let mut inner = self.inner.lock().log_and_lock();
+        let v = inner.take();
         drop(inner);
         self.waker.notify_one();
 
@@ -214,6 +235,14 @@ struct AccessTracker {
 
     readers: Mutex<HashMap<usize, Arc<AccessDescriptor>>>,
     writers: Mutex<HashMap<usize, Arc<AccessDescriptor>>>,
+
+    // HACK: on overflow these will re-use old IDs
+    reader_ids: AtomicUsize,
+    writer_ids: AtomicUsize,
+
+    // cached
+    n_writers: AtomicIsize,
+    n_readers: AtomicIsize,
 }
 
 // For the Queue
@@ -232,8 +261,18 @@ pub struct ReaderAccessHandle<T> {
     key: usize,
 }
 
+#[derive(Debug)]
+pub enum ReaderError {
+    NoWriters,
+}
+
 impl<T> ReaderAccessHandle<T> {
-    pub fn pop_front_wait(&self) -> T {
+    /// This will only return an Err if there are currently no writers
+    /// and no value to pop.
+    ///
+    /// This does not necessarily mean the queue has "closed", as long as new
+    /// writers can still be created.
+    pub fn pop_front_wait(&self) -> Result<T, ReaderError> {
         loop {
             // attempt to update own action
             if let Err(e) = self.desc.action.compare_exchange_weak(
@@ -261,7 +300,18 @@ impl<T> ReaderAccessHandle<T> {
 
         let index = queue.start.fetch_add(1, Ordering::SeqCst) as usize % buf.len();
 
-        let val = buf.get(index).unwrap().take();
+        let n_readers = self.queue.access.n_readers.load(Ordering::SeqCst);
+
+        let location = buf.get(index).unwrap();
+
+        if n_readers == 0 {
+            match location.try_take() {
+                Some(v) => return Ok(v),
+                None => return Err(ReaderError::NoWriters),
+            }
+        }
+
+        let val = buf.get(index).unwrap().take_wait();
 
         if let Err(e) = self.desc.action.compare_exchange(
             Action::Reading,
@@ -275,11 +325,12 @@ impl<T> ReaderAccessHandle<T> {
             )
         }
         self.queue.len.fetch_sub(1, Ordering::SeqCst);
-        val
+
+        Ok(val)
     }
 
     pub fn len(&self) -> usize {
-        self.queue.len.load(Ordering::SeqCst)
+        self.queue.len.load(Ordering::SeqCst).max(0) as usize
     }
 }
 
@@ -306,6 +357,7 @@ impl<T> WriterAccessHandle<T> {
         for (key, reader) in readers.iter() {
             let mut ex_action = Action::Idle;
             loop {
+                std::hint::spin_loop();
                 match reader.action.compare_exchange_weak(
                     ex_action,
                     Action::ExternallyBlocked,
@@ -340,6 +392,7 @@ impl<T> WriterAccessHandle<T> {
         for (key, writer) in writers.iter() {
             let mut ex_action = Action::Idle;
             loop {
+                std::hint::spin_loop();
                 match writer.action.compare_exchange_weak(
                     ex_action,
                     Action::ExternallyBlocked,
@@ -386,6 +439,9 @@ impl<T> WriterAccessHandle<T> {
             original_status,
             old_reader_actions,
             old_writer_actions,
+
+            writer_lock: writers,
+            reader_lock: readers,
         }
     }
 
@@ -450,7 +506,11 @@ impl<T> WriterAccessHandle<T> {
             std::hint::spin_loop();
         }
 
-        action.store(old_action, Ordering::SeqCst);
+        if old_action.code() == Action::ResizeRequested.code() {
+            action.store(Action::Idle, Ordering::SeqCst);
+        } else {
+            action.store(old_action, Ordering::SeqCst);
+        }
     }
 
     pub fn push(&self, data: T) {
@@ -488,6 +548,7 @@ impl<T> WriterAccessHandle<T> {
             let mut guard = location.inner.lock().log_and_lock();
             if guard.is_some() {
                 drop(guard);
+
                 if let Err(e) = self.desc.action.compare_exchange_weak(
                     Action::Writing,
                     Action::ResizeRequested,
@@ -510,12 +571,14 @@ impl<T> WriterAccessHandle<T> {
     }
 
     pub fn len(&self) -> usize {
-        self.queue.len.load(Ordering::SeqCst)
+        self.queue.len.load(Ordering::SeqCst).max(0) as usize
     }
 }
 
 impl<T> Drop for WriterAccessHandle<T> {
     fn drop(&mut self) {
+        self.queue.access.n_writers.fetch_sub(1, Ordering::SeqCst);
+
         self.queue
             .access
             .writers
@@ -527,6 +590,8 @@ impl<T> Drop for WriterAccessHandle<T> {
 
 impl<T> Drop for ReaderAccessHandle<T> {
     fn drop(&mut self) {
+        self.queue.access.n_readers.fetch_sub(1, Ordering::SeqCst);
+
         self.queue
             .access
             .readers
@@ -536,12 +601,19 @@ impl<T> Drop for ReaderAccessHandle<T> {
     }
 }
 
+// During exclusive access, we even restrict dropping and
+// creating readers and writers.
+//
+// TODO: Review if needed or if dropped/new readers/writers can just
+// be ignored.
 pub struct ExclusiveGuard<'a, T> {
     inner: &'a AtomicQueue<T>,
     buf: &'a mut Vec<Location<T>>,
     original_status: Status,
     old_writer_actions: Vec<(usize, Action)>,
     old_reader_actions: Vec<(usize, Action)>,
+    writer_lock: MutexGuard<'a, HashMap<usize, Arc<AccessDescriptor>>>,
+    reader_lock: MutexGuard<'a, HashMap<usize, Arc<AccessDescriptor>>>,
 }
 
 impl<T> ExclusiveGuard<'_, T> {
@@ -556,19 +628,20 @@ impl<T> ExclusiveGuard<'_, T> {
     pub fn release(&mut self) {
         debug!("restoring reader and writer states");
         // shouldnt deadlock since our exclusivity mechanism is the status flag on the queue
-        let readers = self.inner.access.readers.lock().log_and_lock();
+        let readers = &self.reader_lock;
         for (key, action) in self.old_reader_actions.iter() {
             let desc = &readers[key];
             desc.action.store(*action, Ordering::SeqCst);
         }
-        drop(readers);
 
-        let writers = self.inner.access.writers.lock().log_and_lock();
+        let writers = &self.writer_lock;
         for (key, action) in self.old_writer_actions.iter() {
-            let desc = &writers[key];
+            let desc = match writers.get(key) {
+                Some(v) => v,
+                None => continue,
+            };
             desc.action.store(*action, Ordering::SeqCst);
         }
-        drop(writers);
 
         debug!("releasing exclusive guard");
         let status = self.inner.access.status.load(Ordering::SeqCst);
@@ -598,7 +671,10 @@ impl<T> Drop for ExclusiveGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
+    use std::{
+        sync::{Arc, atomic::AtomicI32},
+        time::Duration,
+    };
 
     #[test]
     fn single_item() {
@@ -610,8 +686,61 @@ mod tests {
         let reader = AtomicQueue::reader(Arc::clone(&queue));
         std::thread::spawn(move || writer.push(item));
 
-        let v = reader.pop_front_wait();
+        let v = reader.pop_front_wait().unwrap();
 
         assert_eq!(item, v);
+    }
+
+    #[test]
+    fn thousands_of_items() {
+        const DEBUG_PRINT: bool = true;
+
+        let item = 10;
+        let n = 5000;
+        let threads = 100;
+
+        let readers = 5;
+
+        let queue: Arc<AtomicQueue<i32>> = Arc::new(AtomicQueue::with_capacity(23));
+
+        let mut handles = vec![];
+        for i in 0..threads {
+            let writer = AtomicQueue::writer(Arc::clone(&queue));
+            let t = std::thread::spawn(move || {
+                for _ in 0..n {
+                    writer.push(item);
+                }
+            });
+            handles.push(t);
+        }
+
+        let counter = Arc::new(AtomicI32::new(0));
+
+        for i in 0..readers {
+            let counter = Arc::clone(&counter);
+            let reader = AtomicQueue::reader(Arc::clone(&queue));
+            let t = std::thread::spawn(move || {
+                while let Ok(v) = reader.pop_front_wait() {
+                    counter.fetch_add(v, Ordering::SeqCst);
+                }
+            });
+            handles.push(t);
+        }
+        if DEBUG_PRINT {
+            let debug_counter = counter.clone();
+            std::thread::spawn(move || {
+                let counter = debug_counter;
+                loop {
+                    println!("counter: {}", counter.load(Ordering::SeqCst));
+                    std::thread::sleep(Duration::from_secs(1));
+                }
+            });
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        assert_eq!(item * n * threads, counter.load(Ordering::SeqCst));
     }
 }

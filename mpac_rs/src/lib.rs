@@ -3,7 +3,7 @@ pub enum SendError<T> {
     Closed(T),
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum RecvError {
     Closed,
 }
