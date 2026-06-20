@@ -275,7 +275,7 @@ impl<T> ReaderAccessHandle<T> {
     pub fn pop_front_wait(&self) -> Result<T, ReaderError> {
         loop {
             // attempt to update own action
-            if let Err(e) = self.desc.action.compare_exchange_weak(
+            if let Err(e) = self.desc.action.compare_exchange(
                 Action::Idle,
                 Action::Reading,
                 Ordering::SeqCst,
@@ -300,11 +300,22 @@ impl<T> ReaderAccessHandle<T> {
 
         let index = queue.start.fetch_add(1, Ordering::SeqCst) as usize % buf.len();
 
-        let n_readers = self.queue.access.n_readers.load(Ordering::SeqCst);
+        let n_writers = self.queue.access.n_writers.load(Ordering::SeqCst);
 
         let location = buf.get(index).unwrap();
 
-        if n_readers == 0 {
+        if n_writers == 0 {
+            if let Err(e) = self.desc.action.compare_exchange(
+                Action::Reading,
+                Action::Idle,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                unreachable!(
+                    "action flag for reader flipped while in critical section {:?}",
+                    e
+                )
+            }
             match location.try_take() {
                 Some(v) => return Ok(v),
                 None => return Err(ReaderError::NoWriters),
@@ -358,7 +369,7 @@ impl<T> WriterAccessHandle<T> {
             let mut ex_action = Action::Idle;
             loop {
                 std::hint::spin_loop();
-                match reader.action.compare_exchange_weak(
+                match reader.action.compare_exchange(
                     ex_action,
                     Action::ExternallyBlocked,
                     Ordering::SeqCst,
@@ -393,7 +404,7 @@ impl<T> WriterAccessHandle<T> {
             let mut ex_action = Action::Idle;
             loop {
                 std::hint::spin_loop();
-                match writer.action.compare_exchange_weak(
+                match writer.action.compare_exchange(
                     ex_action,
                     Action::ExternallyBlocked,
                     Ordering::SeqCst,
@@ -447,13 +458,17 @@ impl<T> WriterAccessHandle<T> {
 
     pub fn request_resize_block(&self) {
         debug!("resize requested");
+        let action = &self.desc.action;
+        let old_action = action.load(Ordering::SeqCst);
+        action.store(Action::ResizeRequested, Ordering::SeqCst);
         let mut status = self.queue.access.status.load(Ordering::SeqCst);
         if status.code() == Status::WaitingToResize.code() {
             self.wait_for_ongoing_resize();
+            action.store(old_action, Ordering::SeqCst);
             return;
         }
         loop {
-            match self.queue.access.status.compare_exchange_weak(
+            match self.queue.access.status.compare_exchange(
                 status,
                 Status::WaitingToResize,
                 Ordering::SeqCst,
@@ -478,7 +493,8 @@ impl<T> WriterAccessHandle<T> {
                     }
                     Status::WaitingToResize => {
                         // we are not the ones to update the value, we should wait for the resize to complete.
-                        self.wait_for_ongoing_resize()
+                        self.wait_for_ongoing_resize();
+                        action.store(old_action, Ordering::SeqCst);
                     }
                 },
             }
@@ -486,12 +502,6 @@ impl<T> WriterAccessHandle<T> {
     }
 
     fn wait_for_ongoing_resize(&self) {
-        // TODO: potential source of issues, we are ignoring what the
-        // old action was and it may be relevant to how we wait.
-        let action = &self.desc.action;
-        let old_action = action.load(Ordering::SeqCst);
-
-        action.store(Action::Idle, Ordering::SeqCst);
         loop {
             let new_status = self.queue.access.status.load(Ordering::SeqCst);
 
@@ -505,18 +515,12 @@ impl<T> WriterAccessHandle<T> {
             // TODO: Implement waking mechanism
             std::hint::spin_loop();
         }
-
-        if old_action.code() == Action::ResizeRequested.code() {
-            action.store(Action::Idle, Ordering::SeqCst);
-        } else {
-            action.store(old_action, Ordering::SeqCst);
-        }
     }
 
     pub fn push(&self, data: T) {
         loop {
             // attempt to update own action
-            if let Err(e) = self.desc.action.compare_exchange_weak(
+            if let Err(e) = self.desc.action.compare_exchange(
                 Action::Idle,
                 Action::Writing,
                 Ordering::SeqCst,
@@ -548,15 +552,6 @@ impl<T> WriterAccessHandle<T> {
             let mut guard = location.inner.lock().log_and_lock();
             if guard.is_some() {
                 drop(guard);
-
-                if let Err(e) = self.desc.action.compare_exchange_weak(
-                    Action::Writing,
-                    Action::ResizeRequested,
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                ) {
-                    unreachable!("writer action flag was updated while Writing to {:?}", e);
-                }
                 self.request_resize_block();
                 continue;
             } else {
@@ -670,6 +665,8 @@ impl<T> Drop for ExclusiveGuard<'_, T> {
 
 #[cfg(test)]
 mod tests {
+    const DEBUG: bool = false;
+
     use super::*;
     use std::{
         sync::{Arc, atomic::AtomicI32},
@@ -678,9 +675,16 @@ mod tests {
 
     #[test]
     fn single_item() {
+        if DEBUG {
+            env_logger::builder()
+                .filter_level(log::LevelFilter::Debug)
+                .target(env_logger::Target::Stdout)
+                .init();
+        }
+
         let item = 82;
 
-        let queue: Arc<AtomicQueue<i32>> = Arc::new(AtomicQueue::with_capacity(23));
+        let queue: Arc<AtomicQueue<i32>> = Arc::new(AtomicQueue::with_capacity(5000));
 
         let writer = AtomicQueue::writer(Arc::clone(&queue));
         let reader = AtomicQueue::reader(Arc::clone(&queue));
@@ -693,18 +697,23 @@ mod tests {
 
     #[test]
     fn thousands_of_items() {
-        const DEBUG_PRINT: bool = true;
+        if DEBUG {
+            env_logger::builder()
+                .filter_level(log::LevelFilter::Debug)
+                .target(env_logger::Target::Stdout)
+                .init();
+        }
 
-        let item = 10;
-        let n = 5000;
-        let threads = 100;
+        let item: i32 = 10;
+        let n: i32 = 5000;
+        let threads: i32 = 25;
 
-        let readers = 5;
+        let readers: usize = 5;
 
-        let queue: Arc<AtomicQueue<i32>> = Arc::new(AtomicQueue::with_capacity(23));
+        let queue: Arc<AtomicQueue<i32>> = Arc::new(AtomicQueue::with_capacity(500000));
 
         let mut handles = vec![];
-        for i in 0..threads {
+        for _ in 0..threads {
             let writer = AtomicQueue::writer(Arc::clone(&queue));
             let t = std::thread::spawn(move || {
                 for _ in 0..n {
@@ -716,7 +725,7 @@ mod tests {
 
         let counter = Arc::new(AtomicI32::new(0));
 
-        for i in 0..readers {
+        for _ in 0..readers {
             let counter = Arc::clone(&counter);
             let reader = AtomicQueue::reader(Arc::clone(&queue));
             let t = std::thread::spawn(move || {
@@ -726,12 +735,13 @@ mod tests {
             });
             handles.push(t);
         }
-        if DEBUG_PRINT {
+        drop(queue);
+        if DEBUG {
             let debug_counter = counter.clone();
             std::thread::spawn(move || {
                 let counter = debug_counter;
                 loop {
-                    println!("counter: {}", counter.load(Ordering::SeqCst));
+                    debug!("counter: {}", counter.load(Ordering::SeqCst));
                     std::thread::sleep(Duration::from_secs(1));
                 }
             });
@@ -740,7 +750,9 @@ mod tests {
         for handle in handles {
             handle.join().unwrap();
         }
-
+        if DEBUG {
+            debug!("counter: {}", counter.load(Ordering::SeqCst));
+        }
         assert_eq!(item * n * threads, counter.load(Ordering::SeqCst));
     }
 }
