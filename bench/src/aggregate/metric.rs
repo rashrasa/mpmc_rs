@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 /// Uses linear interpolation when between two values.
 pub fn percentile(sorted_values: &[f64], p: f64) -> anyhow::Result<f64> {
     assert!(
-        p >= 0.0 && p <= 1.0,
+        (0.0..=1.0).contains(&p),
         "percentile only accepts p in range [0.0, 1.0]"
     );
 
@@ -95,7 +95,7 @@ pub struct LazyWindowedMetricBucket {
 
 impl LazyWindowedMetric {
     pub fn new(period: f64, start: f64, end: f64) -> Self {
-        let n = ((end - start) / period).ceil() as usize;
+        let n = (((end - start) / period).ceil() as usize).max(1);
 
         let mut buckets = Vec::with_capacity(n);
         let mut t = start;
@@ -149,7 +149,7 @@ impl LazyWindowedMetric {
     pub fn generate(&mut self) -> anyhow::Result<Vec<DistributionMetric>> {
         let mut result = vec![];
         for bucket in &mut self.buckets {
-            if bucket.values.len() == 0 {
+            if bucket.values.is_empty() {
                 result.push(DistributionMetric::NoEvents {
                     start: bucket.start,
                     end: bucket.end,
@@ -197,7 +197,7 @@ impl LazyWindowedMetric {
     pub fn generate_gauged(&self) -> anyhow::Result<Vec<GaugeMetric>> {
         let mut result = vec![];
         for bucket in &self.buckets {
-            if bucket.values.len() == 0 {
+            if bucket.values.is_empty() {
                 result.push(GaugeMetric::NoEvents {
                     start: bucket.start,
                     end: bucket.end,
