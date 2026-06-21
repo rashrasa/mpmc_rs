@@ -230,9 +230,8 @@ impl<T: Send> ConcurrentBlockingList<T> {
         let dummy_front = &self.dummy_front;
         let dummy_front_guard = loop {
             // SAFETY: Always safe to try_access dummy nodes
-            match unsafe { dummy_front.try_access() } {
-                Ok(g) => break g,
-                Err(_) => {}
+            if let Ok(g) = unsafe { dummy_front.try_access() } {
+                break g;
             }
         };
 
@@ -255,9 +254,8 @@ impl<T: Send> ConcurrentBlockingList<T> {
         loop {
             // SAFETY: We may have shared access to front with a
             //         sender, who will never take.
-            match unsafe { front.try_declare_take() } {
-                Ok(g) => break g,
-                Err(_) => {}
+            if let Ok(g) = unsafe { front.try_declare_take() } {
+                break g;
             }
         }
 
@@ -283,9 +281,8 @@ impl<T: Send> ConcurrentBlockingList<T> {
         let front_next_guard = loop {
             // SAFETY: We may have shared access to front with a
             //         sender, who will never take.
-            match unsafe { front_next.try_access() } {
-                Ok(g) => break g,
-                Err(_) => {}
+            if let Ok(g) = unsafe { front_next.try_access() } {
+                break g;
             }
         };
 
@@ -332,9 +329,8 @@ impl<T: Send> ConcurrentBlockingList<T> {
             let dummy_back = &self.dummy_back;
             let dummy_back_guard = loop {
                 // SAFETY: Always safe to access a dummy node
-                match unsafe { dummy_back.try_access() } {
-                    Ok(g) => break g,
-                    Err(_) => {}
+                if let Ok(g) = unsafe { dummy_back.try_access() } {
+                    break g;
                 }
             };
 
@@ -355,9 +351,8 @@ impl<T: Send> ConcurrentBlockingList<T> {
                     Err(_) => {}
                 }
             };
-            match back_guard {
-                Ok(bg) => break (dummy_back, dummy_back_guard, back, bg),
-                Err(_) => {}
+            if let Ok(bg) = back_guard {
+                break (dummy_back, dummy_back_guard, back, bg);
             }
         };
         let node = Box::leak(Box::new(Node::new_node(data)));
@@ -401,6 +396,25 @@ impl<T: Send> ConcurrentBlockingList<T> {
     }
 }
 
+impl<T: Send> Default for ConcurrentBlockingList<T> {
+    fn default() -> Self {
+        let dummy_front = Node::new_front();
+        let dummy_back = Node::new_back();
+
+        // SAFETY: We have exclusive access to both
+        unsafe {
+            dummy_back.set_next(&dummy_front);
+            dummy_front.set_next(&dummy_back);
+        }
+
+        Self {
+            dummy_front,
+            dummy_back,
+
+            len: (Mutex::new(0), Condvar::new()),
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -496,7 +510,6 @@ mod tests {
         let (tx, rx) = channel();
 
         let t0 = thread::spawn(move || {
-            let start = start.clone();
             let mut sent = 0.0;
             while Instant::now().duration_since(start).as_secs_f64() < seconds {
                 tx.send(msg).unwrap();

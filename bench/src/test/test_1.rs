@@ -95,7 +95,7 @@ fn sender_thread<T: Send>(
     let start = clock.now();
     runner.override_start(start);
     loop {
-        if let Err(_) = sender_work(&mut tx, &mut runner, make_payload) {
+        if sender_work(&mut tx, &mut runner, make_payload).is_err() {
             break;
         }
         if !keep_sender_alive(&config.sender_ttl_s, &start, &mut clock) {
@@ -121,7 +121,7 @@ fn sender_work<T: Send>(
 ) -> anyhow::Result<()> {
     let id = runner.next_id();
     let message = Message {
-        id: id,
+        id,
         _payload: make_playload(),
     };
 
@@ -159,7 +159,7 @@ fn receiver_thread<T: Send>(
     let start = clock.now();
     runner.override_start(start);
     loop {
-        if let Err(_) = receiver_work(&mut rx, &mut runner) {
+        if receiver_work(&mut rx, &mut runner).is_err() {
             break;
         }
         if !keep_receiver_alive(&config.receiver_ttl_s, &start, &mut clock) {

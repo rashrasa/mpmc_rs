@@ -25,7 +25,7 @@ mod tests {
         let end = clock.clone().now();
         let elapsed = end.duration_since(start).as_secs_f64();
         println!("elapsed: {:.17}", elapsed);
-        assert!(elapsed >= 2.4_999_999_999_999);
+        assert!(elapsed >= 2.499_999_999_999_9);
     }
 
     #[cfg(feature = "unstable")]

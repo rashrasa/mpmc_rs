@@ -50,16 +50,14 @@ fn main() -> anyhow::Result<()> {
         let version_entry = version_entry?;
         let version_path = version_entry.path();
         if version_path.is_dir() {
-            let version_name = String::from(
-                version_path
-                    .file_name()
-                    .context(format!("path {version_path:?} is invalid"))?
-                    .to_str()
-                    .ok_or(anyhow::Error::msg(format!(
-                        "could not convert path {version_path:?} to string"
-                    )))?
-                    .replace("version_", ""),
-            );
+            let version_name = version_path
+                .file_name()
+                .context(format!("path {version_path:?} is invalid"))?
+                .to_str()
+                .ok_or(anyhow::Error::msg(format!(
+                    "could not convert path {version_path:?} to string"
+                )))?
+                .replace("version_", "");
 
             for config_entry in version_path.read_dir().unwrap() {
                 let version_name = version_name.clone();
@@ -77,7 +75,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     debug!("ran aggregation in {:.2}s", start.elapsed().as_secs_f64());
-    return Ok(());
+    Ok(())
 }
 
 fn run_work(
@@ -97,7 +95,7 @@ fn run_work(
             )))?;
         let config_name = config_path_str.replace("config_", "");
 
-        let agg = Aggregation::from_directory(&config_path, 0.5).context(format!(
+        let agg = Aggregation::from_directory(&config_path, 0.001).context(format!(
             "could not run aggregation for version \"{}\" config \"{}\"",
             version_name, config_name
         ))?;

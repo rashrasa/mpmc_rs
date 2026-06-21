@@ -280,8 +280,11 @@ mod tests {
     fn percentile_p999_large_list() {
         let items: Vec<f64> = (0..=99_999).map(|i| i as f64 * i as f64).collect();
 
+        #[allow(clippy::excessive_precision)]
+        let expected = 9_979_810_400.798_999_786_337;
+
         assert_relative_eq!(
-            9_979_810_400.798_999_786_337,
+            expected,
             percentile(&items, 0.999).unwrap(),
             epsilon = F64_ACCEPTABLE_ERROR
         );

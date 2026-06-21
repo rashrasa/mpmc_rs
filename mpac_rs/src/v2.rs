@@ -90,10 +90,10 @@ impl<T: Send> BlockingSend<T> for Sender<T> {
         };
 
         if inner.receivers == 0 {
-            return Err(SendError::Closed(data));
+            Err(SendError::Closed(data))
         } else {
             inner.queue.push_back(data);
-            return Ok(());
+            Ok(())
         }
     }
 }
@@ -110,10 +110,10 @@ impl<T: Send> crate::BBlockingSend<T> for Sender<T> {
         };
 
         if inner.receivers == 0 {
-            return Err(crate::BSendError::Closed((data, inner.queue.len())));
+            Err(crate::BSendError::Closed((data, inner.queue.len())))
         } else {
             inner.queue.push_back(data);
-            return Ok(inner.queue.len());
+            Ok(inner.queue.len())
         }
     }
 }

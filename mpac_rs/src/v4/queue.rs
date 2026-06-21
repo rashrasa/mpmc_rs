@@ -164,13 +164,13 @@ impl<T> AtomicQueue<T> {
             let start_len = old_len - start;
             let start_e = old.drain(start..old_len);
 
-            for (e, v) in (&mut vec[0..start_len]).iter_mut().zip(start_e) {
+            for (e, v) in vec[0..start_len].iter_mut().zip(start_e) {
                 *e = v;
             }
 
             let end_e = old.drain(0..=end);
 
-            for (e, v) in (&mut vec[start_len..=end]).iter_mut().zip(end_e) {
+            for (e, v) in vec[start_len..=end].iter_mut().zip(end_e) {
                 *e = v;
             }
         } else {
@@ -273,21 +273,16 @@ impl<T> ReaderAccessHandle<T> {
     /// This does not necessarily mean the queue has "closed", as long as new
     /// writers can still be created.
     pub fn pop_front_wait(&self) -> Result<T, ReaderError> {
-        loop {
-            // attempt to update own action
-            if let Err(e) = self.desc.action.compare_exchange(
-                Action::Idle,
-                Action::Reading,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            ) {
-                match e {
-                    Action::Idle => continue, // TODO: check if spurious failure makes sense here
-                    Action::ExternallyBlocked => continue,
-                    a => unreachable!("unexpected action flag for reader: {:?}", a),
-                }
-            } else {
-                break;
+        while let Err(e) = self.desc.action.compare_exchange(
+            Action::Idle,
+            Action::Reading,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        ) {
+            match e {
+                Action::Idle => continue, // TODO: check if spurious failure makes sense here
+                Action::ExternallyBlocked => continue,
+                a => unreachable!("unexpected action flag for reader: {:?}", a),
             }
         }
 
@@ -518,21 +513,16 @@ impl<T> WriterAccessHandle<T> {
     }
 
     pub fn push(&self, data: T) {
-        loop {
-            // attempt to update own action
-            if let Err(e) = self.desc.action.compare_exchange(
-                Action::Idle,
-                Action::Writing,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            ) {
-                match e {
-                    Action::Idle => continue, // TODO: check if spurious failure makes sense here
-                    Action::ExternallyBlocked => continue,
-                    a => unreachable!("unexpected action flag for reader: {:?}", a),
-                }
-            } else {
-                break;
+        while let Err(e) = self.desc.action.compare_exchange(
+            Action::Idle,
+            Action::Writing,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        ) {
+            match e {
+                Action::Idle => continue, // TODO: check if spurious failure makes sense here
+                Action::ExternallyBlocked => continue,
+                a => unreachable!("unexpected action flag for reader: {:?}", a),
             }
         }
 

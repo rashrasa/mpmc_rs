@@ -28,7 +28,7 @@ impl MainBenchRunner {
             inner: BenchRunner {
                 global_start: Arc::new(start),
                 id_bank: Arc::new(AtomicU64::new(0)),
-                clock: clock,
+                clock,
 
                 id: String::from("main_runner"),
                 runner_start: start,
@@ -79,7 +79,7 @@ impl BenchRunner {
         Self {
             global_start: self.global_start.clone(),
             id_bank: self.id_bank.clone(),
-            clock: clock,
+            clock,
 
             id: id.clone(),
             runner_start: start,
@@ -125,7 +125,7 @@ impl BenchRunner {
         let last = last.to_owned() + ".bin";
 
         create_dir_all(&dst)?;
-        let mut file = File::create(&dst.join(last))?;
+        let mut file = File::create(dst.join(last))?;
 
         write_all_bench_log(
             self.log,
@@ -153,7 +153,7 @@ impl<'a> EventGuard<'a> {
         self.runner.log.push(BenchEvent {
             start: self.start,
             end: self.runner.clock.now(),
-            id: id,
+            id,
             backpressure: len,
         })
     }

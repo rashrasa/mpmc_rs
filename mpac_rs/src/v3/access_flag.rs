@@ -56,7 +56,7 @@ impl AccessFlag {
             Ordering::SeqCst,
             Ordering::SeqCst,
         ) {
-            Ok(_) => Ok(ReleaseGuard { flag: &self }),
+            Ok(_) => Ok(ReleaseGuard { flag: self }),
             Err(f) => {
                 let access_status = f & ACCESS_MASK;
                 if access_status == ACCESSED {
@@ -216,17 +216,16 @@ mod tests {
         let init_ident = Identity::Node;
         let node = AccessFlag::new(&init_ident);
         let guard = loop {
-            match node.try_access() {
-                Ok(g) => break g,
-                Err(_) => {}
+            if let Ok(g) = node.try_access() {
+                break g;
             }
         };
         assert_eq!(init_ident, node.identity());
         drop(guard);
         assert_eq!(init_ident, node.identity());
-        while let Err(_) = node.try_declare_take() {}
+        while node.try_declare_take().is_err() {}
         assert_eq!(init_ident, node.identity());
-        while let Err(_) = node.try_take() {}
+        while node.try_take().is_err() {}
         assert_eq!(init_ident, node.identity());
     }
 

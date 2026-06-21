@@ -250,8 +250,8 @@ impl Aggregation {
         });
 
         Ok(Aggregation {
-            start: start,
-            end: end,
+            start,
+            end,
 
             backpressure_values: backpressure,
             max_backpressure: max_bp,
