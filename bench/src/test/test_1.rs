@@ -1,10 +1,10 @@
 use std::{
     sync::{Arc, Barrier},
     thread,
+    time::Instant,
 };
 
 use anyhow::Context;
-use fast_time::{Clock, Instant};
 use log::{debug, error};
 use mpac_rs::{BBlockingReceive, BBlockingSend, BChannelMaker};
 
@@ -86,19 +86,17 @@ fn sender_thread<T: Send>(
     mut runner: BenchRunner,
     make_payload: fn() -> T,
 ) {
-    let mut clock = runner.clock();
-
     start_flag.wait();
 
     debug!("(Sender) Received start signal");
 
-    let start = clock.now();
+    let start = Instant::now();
     runner.override_start(start);
     loop {
         if sender_work(&mut tx, &mut runner, make_payload).is_err() {
             break;
         }
-        if !keep_sender_alive(&config.sender_ttl_s, &start, &mut clock) {
+        if !keep_sender_alive(&config.sender_ttl_s, &start) {
             break;
         }
     }
@@ -134,9 +132,9 @@ fn sender_work<T: Send>(
     Ok(())
 }
 
-fn keep_sender_alive(ttl: &Option<f64>, start: &Instant, clock: &mut Clock) -> bool {
+fn keep_sender_alive(ttl: &Option<f64>, start: &Instant) -> bool {
     if let Some(ttl) = ttl {
-        if start.elapsed(clock).as_secs_f64() > *ttl {
+        if start.elapsed().as_secs_f64() > *ttl {
             return false;
         }
         return true;
@@ -150,19 +148,17 @@ fn receiver_thread<T: Send>(
     mut rx: impl BBlockingReceive<Message<T>>,
     mut runner: BenchRunner,
 ) {
-    let mut clock = runner.clock();
-
     start_flag.wait();
 
     debug!("(Receiver) Received start signal");
 
-    let start = clock.now();
+    let start = Instant::now();
     runner.override_start(start);
     loop {
         if receiver_work(&mut rx, &mut runner).is_err() {
             break;
         }
-        if !keep_receiver_alive(&config.receiver_ttl_s, &start, &mut clock) {
+        if !keep_receiver_alive(&config.receiver_ttl_s, &start) {
             break;
         }
     }
@@ -192,9 +188,9 @@ fn receiver_work<T: Send>(
     }
 }
 
-fn keep_receiver_alive(ttl: &Option<f64>, start: &Instant, clock: &mut Clock) -> bool {
+fn keep_receiver_alive(ttl: &Option<f64>, start: &Instant) -> bool {
     if let Some(ttl) = ttl {
-        if start.elapsed(clock).as_secs_f64() > *ttl {
+        if start.elapsed().as_secs_f64() > *ttl {
             return false;
         }
         return true;

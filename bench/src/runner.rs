@@ -6,11 +6,11 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
+    time::Instant,
 };
 
 use crate::completion::CompletionGuard;
 use anyhow::Context;
-use fast_time::{Clock, Instant};
 
 use crate::RUNNER_WRITER_BUFFER_SIZE;
 
@@ -21,14 +21,11 @@ pub struct MainBenchRunner {
 
 impl MainBenchRunner {
     pub fn new(result_root_path: PathBuf) -> Self {
-        let mut clock = Clock::new();
-
-        let start = clock.now();
+        let start = Instant::now();
         Self {
             inner: BenchRunner {
                 global_start: Arc::new(start),
                 id_bank: Arc::new(AtomicU64::new(0)),
-                clock,
 
                 id: String::from("main_runner"),
                 runner_start: start,
@@ -60,7 +57,6 @@ impl MainBenchRunner {
 pub struct BenchRunner {
     id_bank: Arc<AtomicU64>,
     global_start: Arc<Instant>,
-    clock: Clock,
 
     id: String,
     runner_start: Instant,
@@ -74,12 +70,10 @@ pub struct BenchRunner {
 impl BenchRunner {
     pub fn spawn_runner(&self, id: String) -> Self {
         let id = format!("{}::{}", self.id, id);
-        let mut clock = self.clock.clone();
-        let start = clock.now();
+        let start = Instant::now();
         Self {
             global_start: self.global_start.clone(),
             id_bank: self.id_bank.clone(),
-            clock,
 
             id: id.clone(),
             runner_start: start,
@@ -95,23 +89,19 @@ impl BenchRunner {
         self.id_bank.fetch_add(1, Ordering::Relaxed)
     }
 
-    pub fn clock(&self) -> Clock {
-        self.clock.clone()
-    }
-
     pub fn override_start(&mut self, start: Instant) {
         self.runner_start = start;
     }
 
     pub fn start_event<'a>(&'a mut self) -> EventGuard<'a> {
         EventGuard {
-            start: self.clock.now(),
+            start: Instant::now(),
             runner: self,
         }
     }
 
     pub fn complete_runner(mut self) -> anyhow::Result<()> {
-        let end = self.clock.now();
+        let end = Instant::now();
 
         let mut dst = self.save_to_root;
         let splits = self.id.split("::");
@@ -152,7 +142,7 @@ impl<'a> EventGuard<'a> {
     pub fn finish(self, id: u64, len: u64) {
         self.runner.log.push(BenchEvent {
             start: self.start,
-            end: self.runner.clock.now(),
+            end: Instant::now(),
             id,
             backpressure: len,
         })
