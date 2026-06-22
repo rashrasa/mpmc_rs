@@ -1,5 +1,3 @@
-// SCRAPPED, see v4 instead.
-
 // Currently, all atomic operations use `Ordering::SeqCst`.
 // Once correctness is established, a more efficient Ordering will be used for each operation.
 // TODO
@@ -40,15 +38,14 @@ struct ChannelInner<T> {
 
 impl<T: Send> BlockingReceive<T> for Receiver<T> {
     fn recv(&self) -> Result<T, RecvError> {
-        let n_send = self.inner.senders.load(Ordering::SeqCst);
-        if n_send == 0 {
-            let len = self.inner.queue.len();
-            if len == 0 {
-                return Err(RecvError::Closed);
-            }
+        match self
+            .inner
+            .queue
+            .pop_front_wait_with_check(|| self.inner.senders.load(Ordering::SeqCst) > 0)
+        {
+            Ok(v) => Ok(v),
+            Err(_) => Err(RecvError::Closed),
         }
-
-        Ok(self.inner.queue.pop_front_wait())
     }
 }
 
@@ -67,13 +64,13 @@ impl<T: Send> BlockingSend<T> for Sender<T> {
 #[cfg(feature = "bench")]
 impl<T: Send> crate::BBlockingReceive<T> for Receiver<T> {
     fn b_recv(&self) -> Result<(T, usize), crate::BRecvError> {
-        let n_send = self.inner.senders.load(Ordering::SeqCst);
-        let len = self.inner.queue.len();
-
-        if n_send == 0 && len == 0 {
-            Err(crate::BRecvError::Closed(len))
-        } else {
-            Ok((self.inner.queue.pop_front_wait(), len))
+        match self
+            .inner
+            .queue
+            .pop_front_wait_with_check(|| self.inner.senders.load(Ordering::SeqCst) > 0)
+        {
+            Ok(v) => Ok((v, self.inner.queue.len())),
+            Err(_) => Err(crate::BRecvError::Closed(self.inner.queue.len())),
         }
     }
 }
@@ -122,6 +119,7 @@ impl<T> Drop for Receiver<T> {
 impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
         let n_receivers = self.inner.senders.fetch_sub(1, Ordering::SeqCst);
+        self.inner.queue.wake_all_readers();
 
         #[cfg(feature = "bench")]
         debug!("Sender count: {}", n_receivers - 1);

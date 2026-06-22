@@ -42,7 +42,11 @@ impl<T: Send> ConcurrentBlockingList<T> {
         unsafe { self.dummy_back.as_ref() }
     }
 
-    pub fn pop_front_wait(&self) -> T {
+    /// only returns an Err if the check fails
+    pub fn pop_front_wait_with_check<F>(&self, mut check: F) -> Result<T, ()>
+    where
+        F: FnMut() -> bool,
+    {
         // wait for a push if necessary
         let (lock, cvar) = &self.len;
         let mut len_guard = match lock.lock() {
@@ -54,6 +58,9 @@ impl<T: Send> ConcurrentBlockingList<T> {
         };
         let mut len = *len_guard;
         while len == 0 {
+            if !check() {
+                return Err(());
+            }
             len_guard = cvar.wait(len_guard).unwrap();
             len = *len_guard;
         }
@@ -157,7 +164,7 @@ impl<T: Send> ConcurrentBlockingList<T> {
         // released access to all resources.
 
         // SAFETY: We have exclusive access to front and it does not get dereferenced after the swap_take_drop call
-        unsafe { front.swap_take_drop() }
+        Ok(unsafe { front.swap_take_drop() })
     }
 
     pub fn push_back(&self, data: T) {
@@ -235,6 +242,12 @@ impl<T: Send> ConcurrentBlockingList<T> {
 
     pub fn len(&self) -> usize {
         *self.len.0.lock().log_and_lock()
+    }
+}
+
+impl<T> ConcurrentBlockingList<T> {
+    pub fn wake_all_readers(&self) {
+        self.len.1.notify_all();
     }
 }
 
