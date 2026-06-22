@@ -316,16 +316,22 @@ fn dedupe_bp_values(backpressure: Vec<(f64, u64)>) -> Vec<(f64, u64)> {
         let mut vec = Vec::with_capacity(bp_n);
 
         let mut backpressure_iter = backpressure.into_iter();
-        let (mut last_t, mut last_v) = backpressure_iter.next().unwrap();
+        let (mut last_t, mut sum_v) = backpressure_iter.next().unwrap();
+        let mut last_n = 1;
 
         for (t, v) in backpressure_iter {
             if last_t != t {
-                vec.push((last_t, last_v));
+                vec.push((last_t, sum_v / last_n));
                 last_t = t;
-                last_v = v;
+                sum_v = v;
+                last_n = 1;
+            } else {
+                last_n += 1;
+                sum_v += v;
             }
-            last_v = last_v.max(v);
         }
+
+        vec.push((last_t, sum_v / last_n));
         vec
     } else {
         vec![]
