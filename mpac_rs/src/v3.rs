@@ -9,9 +9,12 @@
 mod access_flag;
 mod node;
 
-use std::sync::{
-    Arc, Condvar, Mutex,
-    atomic::{AtomicUsize, Ordering},
+use std::{
+    ptr::NonNull,
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use log::{debug, error};
@@ -179,29 +182,27 @@ unsafe impl<T: Send> Sync for ConcurrentBlockingList<T> {}
 // INVARIANT: front and back are never TAKEN
 #[derive(Debug)]
 pub struct ConcurrentBlockingList<T> {
-    dummy_front: Node<T>,
-    dummy_back: Node<T>,
+    dummy_front: NonNull<Node<T>>,
+    dummy_back: NonNull<Node<T>>,
 
     len: (Mutex<usize>, Condvar),
 }
 
 impl<T: Send> ConcurrentBlockingList<T> {
     pub fn new() -> Self {
-        let dummy_front = Node::new_front();
-        let dummy_back = Node::new_back();
+        Self::default()
+    }
 
-        // SAFETY: We have exclusive access to both
-        unsafe {
-            dummy_back.set_next(&dummy_front);
-            dummy_front.set_next(&dummy_back);
-        }
+    pub fn dummy_front(&self) -> &Node<T> {
+        // Safety: This is always safe as all necessary
+        // modifications for DUMMY nodes are done
+        // safely with shared references through atomic flag access checks.
+        unsafe { self.dummy_front.as_ref() }
+    }
 
-        Self {
-            dummy_front,
-            dummy_back,
-
-            len: (Mutex::new(0), Condvar::new()),
-        }
+    pub fn dummy_back(&self) -> &Node<T> {
+        // Safety: Same as dummy_front
+        unsafe { self.dummy_back.as_ref() }
     }
 
     pub fn pop_front_wait(&self) -> T {
@@ -227,7 +228,7 @@ impl<T: Send> ConcurrentBlockingList<T> {
 
         // Mark front as accessed
         // Could be contending with another receiver if len > 1
-        let dummy_front = &self.dummy_front;
+        let dummy_front = self.dummy_front();
         let dummy_front_guard = loop {
             // SAFETY: Always safe to try_access dummy nodes
             if let Ok(g) = unsafe { dummy_front.try_access() } {
@@ -238,7 +239,7 @@ impl<T: Send> ConcurrentBlockingList<T> {
         // SAFETY: We have access to dummy front. No other receiver will get through.
         // A sender may be in the middle of updating its next pointer
         // but senders never take.
-        let front = unsafe { self.dummy_front.next_node() }.unwrap();
+        let front = unsafe { dummy_front.next_node() }.unwrap();
 
         // SAFETY: We have exclusive access to front
         let front_ident = unsafe { front.identity() };
@@ -326,7 +327,7 @@ impl<T: Send> ConcurrentBlockingList<T> {
         // Deadlock prevention: Sender keeps releasing dummy_back if receiver is trying to pop.
         // Only relevant for len == 1
         let (dummy_back, dummy_back_guard, back, back_guard) = loop {
-            let dummy_back = &self.dummy_back;
+            let dummy_back = self.dummy_back();
             let dummy_back_guard = loop {
                 // SAFETY: Always safe to access a dummy node
                 if let Ok(g) = unsafe { dummy_back.try_access() } {
@@ -398,13 +399,16 @@ impl<T: Send> ConcurrentBlockingList<T> {
 
 impl<T: Send> Default for ConcurrentBlockingList<T> {
     fn default() -> Self {
-        let dummy_front = Node::new_front();
-        let dummy_back = Node::new_back();
+        // This is safe by construction. Node is allocated on the heap and will be valid until freed manually
+        let mut dummy_front =
+            unsafe { NonNull::new_unchecked(Box::leak(Box::new(Node::new_front()))) };
+        let mut dummy_back =
+            unsafe { NonNull::new_unchecked(Box::leak(Box::new(Node::new_back()))) };
 
         // SAFETY: We have exclusive access to both
         unsafe {
-            dummy_back.set_next(&dummy_front);
-            dummy_front.set_next(&dummy_back);
+            dummy_back.as_mut().set_next(dummy_front.as_ref());
+            dummy_front.as_mut().set_next(dummy_back.as_ref());
         }
 
         Self {
@@ -424,13 +428,13 @@ mod tests {
     fn empty_structure_valid() {
         let queue = ConcurrentBlockingList::<u8>::new();
 
-        let dummy_front = &queue.dummy_front;
+        let dummy_front = queue.dummy_front();
         assert_eq!(unsafe { dummy_front.identity() }, Identity::Front);
 
         let dummy_back = unsafe { dummy_front.next_node() }.unwrap();
         assert_eq!(unsafe { dummy_back.identity() }, Identity::Back);
 
-        let dummy_back_list = &queue.dummy_back;
+        let dummy_back_list = queue.dummy_back();
         assert_eq!(unsafe { dummy_back_list.identity() }, Identity::Back);
     }
 
@@ -441,7 +445,7 @@ mod tests {
         let v = 5;
         queue.push_back(v);
 
-        let dummy_front = &queue.dummy_front;
+        let dummy_front = queue.dummy_front();
         assert_eq!(unsafe { dummy_front.identity() }, Identity::Front);
 
         let front = unsafe { dummy_front.next_node() }.unwrap();
@@ -451,7 +455,7 @@ mod tests {
         let dummy_back = unsafe { front.next_node() }.unwrap();
         assert_eq!(unsafe { dummy_back.identity() }, Identity::Back);
 
-        let dummy_back_list = &queue.dummy_back;
+        let dummy_back_list = queue.dummy_back();
         assert_eq!(unsafe { dummy_back_list.identity() }, Identity::Back);
     }
 
