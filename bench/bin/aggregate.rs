@@ -95,7 +95,7 @@ fn run_work(
             )))?;
         let config_name = config_path_str.replace("config_", "");
 
-        let agg = Aggregation::from_directory(&config_path, 0.001).context(format!(
+        let agg = Aggregation::from_directory(&config_path, 0.1).context(format!(
             "could not run aggregation for version \"{}\" config \"{}\"",
             version_name, config_name
         ))?;

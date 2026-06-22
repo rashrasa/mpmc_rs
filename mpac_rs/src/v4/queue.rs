@@ -43,6 +43,9 @@ pub struct AtomicQueue<T> {
     // start / end. When an index is returned, the
     // memory location needs to be checked for the
     // existence of a value.
+    //
+    // these eventually end up at the correct value
+    // (i.e. when all ongoing pushes/pops complete)
     start: AtomicIsize,
     end: AtomicIsize,
 
@@ -133,6 +136,7 @@ impl<T> AtomicQueue<T> {
         WriterAccessHandle { queue, desc, key }
     }
 
+    /// re-allocates a Vec
     fn reallocate(vec: &mut Vec<Location<T>>, start: usize, end: usize, cap: usize) {
         let old_len = vec.len();
         assert!(cap >= old_len, "attempted to allocate less capacity");
@@ -354,33 +358,27 @@ impl<T> WriterAccessHandle<T> {
         debug!("waiting on readers");
         for (key, reader) in readers.iter() {
             let mut ex_action = Action::Idle;
-            loop {
-                std::hint::spin_loop();
-                match reader.action.compare_exchange(
-                    ex_action,
-                    Action::ExternallyBlocked,
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                ) {
-                    Ok(_) => break,
-                    Err(e) => match e {
-                        Action::ResizeRequested => {
-                            warn!("a reader requested a resize");
-                            ex_action = Action::ResizeRequested;
-                            continue;
-                        }
-                        Action::Idle | Action::Reading => {
-                            continue;
-                        }
-                        Action::ExternallyBlocked => {
-                            unreachable!(
-                                "someone else has blocked this reader. potential deadlock"
-                            );
-                        }
-                        Action::Writing => {
-                            unreachable!("reader was found writing");
-                        }
-                    },
+            while let Err(e) = reader.action.compare_exchange(
+                ex_action,
+                Action::ExternallyBlocked,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                match e {
+                    Action::ResizeRequested => {
+                        warn!("a reader requested a resize");
+                        ex_action = Action::ResizeRequested;
+                        continue;
+                    }
+                    Action::Idle | Action::Reading => {
+                        continue;
+                    }
+                    Action::ExternallyBlocked => {
+                        unreachable!("someone else has blocked this reader. potential deadlock");
+                    }
+                    Action::Writing => {
+                        unreachable!("reader was found writing");
+                    }
                 }
             }
             old_reader_actions.push((*key, ex_action));
@@ -389,34 +387,27 @@ impl<T> WriterAccessHandle<T> {
         debug!("waiting on writers");
         for (key, writer) in writers.iter() {
             let mut ex_action = Action::Idle;
-            loop {
-                std::hint::spin_loop();
-                match writer.action.compare_exchange(
-                    ex_action,
-                    Action::ExternallyBlocked,
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                ) {
-                    Ok(_) => break,
-                    Err(e) => match e {
-                        Action::ResizeRequested => {
-                            // here, we have detected ourselves
-                            ex_action = Action::ResizeRequested;
-                            waiting += 1;
-                            continue;
-                        }
-                        Action::Idle | Action::Writing => {
-                            continue;
-                        }
-                        Action::ExternallyBlocked => {
-                            unreachable!(
-                                "someone else has blocked this writer. potential deadlock"
-                            );
-                        }
-                        Action::Reading => {
-                            unreachable!("writer was found reading");
-                        }
-                    },
+            while let Err(e) = writer.action.compare_exchange(
+                ex_action,
+                Action::ExternallyBlocked,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                match e {
+                    Action::ResizeRequested => {
+                        ex_action = Action::ResizeRequested;
+                        waiting += 1;
+                        continue;
+                    }
+                    Action::Idle | Action::Writing => {
+                        continue;
+                    }
+                    Action::ExternallyBlocked => {
+                        unreachable!("someone else has blocked this writer. potential deadlock");
+                    }
+                    Action::Reading => {
+                        unreachable!("writer was found reading");
+                    }
                 }
             }
             old_writer_actions.push((*key, ex_action));
