@@ -211,7 +211,7 @@ impl<T> Location<T> {
 
         Ok(v)
     }
-
+    #[allow(unused)]
     fn try_take(&self) -> Option<T> {
         let mut inner = self.inner.lock().log_and_lock();
         let v = inner.take();
