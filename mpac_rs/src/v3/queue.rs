@@ -263,7 +263,6 @@ impl<T: Send> Default for ConcurrentBlockingList<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{thread, time::Instant};
 
     #[test]
     fn empty_structure_valid() {

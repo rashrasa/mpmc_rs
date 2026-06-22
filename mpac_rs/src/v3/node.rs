@@ -1,4 +1,4 @@
-use std::{cell::UnsafeCell, mem::MaybeUninit, ptr::null};
+use std::{cell::UnsafeCell, ptr::null};
 
 use crate::v3::access_flag::{AccessFlag, Identity, ReleaseGuard, Status};
 
@@ -91,9 +91,12 @@ impl<T: Send> Node<T> {
         unsafe { &*self.inner.get() }.flag.identity()
     }
 
+    #[allow(unused)]
     /// SAFETY: Must have exclusive access to this Node
     pub unsafe fn read_inner(&self) -> &T {
-        &unsafe { &*self.inner.get() }.inner
+        let inner = unsafe { &*self.inner.get() };
+        assert_eq!(inner.flag.identity(), Identity::Node);
+        &inner.inner
     }
 }
 

@@ -171,6 +171,7 @@ impl AccessFlag {
         }
     }
 
+    #[allow(unused)]
     pub fn status(&self) -> Status {
         Self::status_from_bits(self.status_bits())
     }

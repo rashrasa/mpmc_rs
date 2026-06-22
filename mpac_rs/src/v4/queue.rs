@@ -104,14 +104,6 @@ impl<T> AtomicQueue<T> {
         }
     }
 
-    /// Creates an atomic queue.
-    ///
-    /// The use of `with_capacity` is preferred over `new`
-    /// since reallocations are extremely expensive.
-    pub fn new() -> Self {
-        Self::with_capacity(0)
-    }
-
     pub fn reader(queue: Arc<AtomicQueue<T>>) -> ReaderAccessHandle<T> {
         let desc = Arc::new(AccessDescriptor {
             action: AtomicAction::new(Action::Idle),
