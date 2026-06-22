@@ -188,7 +188,8 @@ struct Location<T> {
 impl<T> Location<T> {
     /// This will continue waiting for a new value at this location
     /// or until check `returns` false. An Err is only returned if the
-    /// check fails.
+    /// check fails. This skips the check if there are elements
+    /// to pop.
     fn take_wait_with_check<F>(&self, mut check: F) -> Result<T, ()>
     where
         F: FnMut() -> bool,
@@ -300,50 +301,29 @@ impl<T> ReaderAccessHandle<T> {
 
         let index = queue.start.fetch_add(1, Ordering::SeqCst) as usize % buf.len();
 
-        let n_writers = self.queue.access.n_writers.load(Ordering::SeqCst);
-
         let location = buf.get(index).unwrap();
 
-        if n_writers == 0 {
-            if let Err(e) = self.desc.action.compare_exchange(
-                Action::Reading,
-                Action::Idle,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            ) {
-                unreachable!(
-                    "action flag for reader flipped while in critical section {:?}",
-                    e
-                )
-            }
-            match location.try_take() {
-                Some(v) => return Ok(v),
-                None => return Err(ReaderError::NoWriters),
-            }
-        }
-
-        if let Ok(val) = buf
-            .get(index)
-            .unwrap()
-            .take_wait_with_check(|| queue.access.n_writers.load(Ordering::SeqCst) == 0)
+        let res = if let Ok(val) =
+            location.take_wait_with_check(|| queue.access.n_writers.load(Ordering::SeqCst) > 0)
         {
-            if let Err(e) = self.desc.action.compare_exchange(
-                Action::Reading,
-                Action::Idle,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            ) {
-                unreachable!(
-                    "action flag for reader flipped while in critical section {:?}",
-                    e
-                )
-            }
             self.queue.len.fetch_sub(1, Ordering::SeqCst);
 
             Ok(val)
         } else {
             Err(ReaderError::NoWriters)
+        };
+        if let Err(e) = self.desc.action.compare_exchange(
+            Action::Reading,
+            Action::Idle,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        ) {
+            unreachable!(
+                "action flag for reader flipped while in critical section {:?}",
+                e
+            )
         }
+        res
     }
 
     pub fn len(&self) -> usize {
@@ -598,7 +578,6 @@ impl<T> Drop for WriterAccessHandle<T> {
             .lock()
             .log_and_lock()
             .remove(&self.key);
-
         self.wake_all_readers();
     }
 }
