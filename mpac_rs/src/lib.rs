@@ -86,11 +86,13 @@ mod v4;
 #[cfg(feature = "bench")]
 pub mod v4;
 
-use std::sync::{LockResult, MutexGuard};
+pub use v4::*;
+
+#[cfg(feature = "bench")]
+pub mod external;
 
 use log::error;
-pub use v2::*;
-
+use std::sync::{LockResult, MutexGuard};
 pub(crate) trait LogAndLock<'a, T> {
     fn log_and_lock(self) -> MutexGuard<'a, T>;
 }

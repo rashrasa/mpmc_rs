@@ -8,13 +8,14 @@ use bench::{
     test::test_1::{self, run_bench_1},
 };
 use log::{error, info};
-use mpac_rs::{v1::V1Maker, v2::V2Maker, v3::V3Maker, v4::V4Maker};
+use mpac_rs::{external::CrossbeamMaker, v1::V1Maker, v2::V2Maker, v3::V3Maker, v4::V4Maker};
 
 enum Version {
     V1(&'static str),
     V2(&'static str),
     V3(&'static str),
     V4(&'static str),
+    Crossbeam(&'static str),
 }
 
 /// ## Bench:
@@ -52,6 +53,7 @@ fn main() -> anyhow::Result<()> {
     let mut v2 = false;
     let mut v3 = false;
     let mut v4 = false;
+    let mut crossbeam = false;
 
     for arg in std::env::args() {
         if arg == "v1" {
@@ -66,13 +68,17 @@ fn main() -> anyhow::Result<()> {
         if arg == "v4" {
             v4 = true;
         }
+        if arg == "crossbeam" {
+            crossbeam = true;
+        }
     }
 
-    if !v1 && !v2 && !v3 && !v4 {
+    if !v1 && !v2 && !v3 && !v4 && !crossbeam {
         v1 = true;
         v2 = true;
         v3 = true;
         v4 = true;
+        crossbeam = true;
     }
 
     let mut version_descs = vec![];
@@ -87,6 +93,9 @@ fn main() -> anyhow::Result<()> {
     }
     if v4 {
         version_descs.push(Version::V4("v4_lock_free_array"));
+    }
+    if crossbeam {
+        version_descs.push(Version::Crossbeam("crossbeam_mpmc_unbounded"));
     }
 
     // version names: tx_rx_sttl_rttl_size
@@ -145,6 +154,7 @@ fn main() -> anyhow::Result<()> {
             Version::V2(d) => d,
             Version::V3(d) => d,
             Version::V4(d) => d,
+            Version::Crossbeam(d) => d,
         };
         let runner = main_runner.spawn_runner(format!("version_{}", version_desc));
         for (config_desc, config) in &configs {
@@ -156,15 +166,13 @@ fn main() -> anyhow::Result<()> {
             let runner = runner.spawn_runner(format!("config_{}", config_desc));
 
             match v {
-                Version::V1(_) => run_bench_1(&runner, V1Maker, config.clone())
-                    .context("failed to run benchmark 1")?,
-                Version::V2(_) => run_bench_1(&runner, V2Maker, config.clone())
-                    .context("failed to run benchmark 1")?,
-                Version::V3(_) => run_bench_1(&runner, V3Maker, config.clone())
-                    .context("failed to run benchmark 1")?,
-                Version::V4(_) => run_bench_1(&runner, V4Maker, config.clone())
-                    .context("failed to run benchmark 1")?,
+                Version::V1(_) => run_bench_1(&runner, V1Maker, config.clone()),
+                Version::V2(_) => run_bench_1(&runner, V2Maker, config.clone()),
+                Version::V3(_) => run_bench_1(&runner, V3Maker, config.clone()),
+                Version::V4(_) => run_bench_1(&runner, V4Maker, config.clone()),
+                Version::Crossbeam(_) => run_bench_1(&runner, CrossbeamMaker, config.clone()),
             }
+            .context("failed to run benchmark 1")?;
 
             if let Err(err) = runner.complete_runner() {
                 error!("{:?}", err);

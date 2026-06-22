@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+crossbeam = "0.8.4"
 log = "0.4.32"
 
 [features]
