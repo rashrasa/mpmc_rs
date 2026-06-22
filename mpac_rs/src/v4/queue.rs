@@ -166,7 +166,7 @@ impl<T> AtomicQueue<T> {
 
             let end_e = old.drain(0..=end);
 
-            for (e, v) in vec[start_len..=end].iter_mut().zip(end_e) {
+            for (e, v) in vec[start_len..=start_len + end].iter_mut().zip(end_e) {
                 *e = v;
             }
         } else {
@@ -186,10 +186,19 @@ struct Location<T> {
 }
 
 impl<T> Location<T> {
-    fn take_wait(&self) -> T {
+    /// This will continue waiting for a new value at this location
+    /// or until check `returns` false. An Err is only returned if the
+    /// check fails.
+    fn take_wait_with_check<F>(&self, mut check: F) -> Result<T, ()>
+    where
+        F: FnMut() -> bool,
+    {
         let mut inner = self.inner.lock().log_and_lock();
 
         while inner.is_none() {
+            if !check() {
+                return Err(());
+            }
             inner = self.waker.wait(inner).log_and_lock();
         }
 
@@ -199,7 +208,7 @@ impl<T> Location<T> {
         drop(inner);
         self.waker.notify_one();
 
-        v
+        Ok(v)
     }
 
     fn try_take(&self) -> Option<T> {
@@ -313,22 +322,28 @@ impl<T> ReaderAccessHandle<T> {
             }
         }
 
-        let val = buf.get(index).unwrap().take_wait();
+        if let Ok(val) = buf
+            .get(index)
+            .unwrap()
+            .take_wait_with_check(|| queue.access.n_writers.load(Ordering::SeqCst) == 0)
+        {
+            if let Err(e) = self.desc.action.compare_exchange(
+                Action::Reading,
+                Action::Idle,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                unreachable!(
+                    "action flag for reader flipped while in critical section {:?}",
+                    e
+                )
+            }
+            self.queue.len.fetch_sub(1, Ordering::SeqCst);
 
-        if let Err(e) = self.desc.action.compare_exchange(
-            Action::Reading,
-            Action::Idle,
-            Ordering::SeqCst,
-            Ordering::SeqCst,
-        ) {
-            unreachable!(
-                "action flag for reader flipped while in critical section {:?}",
-                e
-            )
+            Ok(val)
+        } else {
+            Err(ReaderError::NoWriters)
         }
-        self.queue.len.fetch_sub(1, Ordering::SeqCst);
-
-        Ok(val)
     }
 
     pub fn len(&self) -> usize {
@@ -505,7 +520,7 @@ impl<T> WriterAccessHandle<T> {
             match e {
                 Action::Idle => continue, // TODO: check if spurious failure makes sense here
                 Action::ExternallyBlocked => continue,
-                a => unreachable!("unexpected action flag for reader: {:?}", a),
+                a => unreachable!("unexpected action flag for writer: {:?}", a),
             }
         }
 
@@ -541,6 +556,36 @@ impl<T> WriterAccessHandle<T> {
     pub fn len(&self) -> usize {
         self.queue.len.load(Ordering::SeqCst).max(0) as usize
     }
+
+    fn wake_all_readers(&self) {
+        while let Err(e) = self.desc.action.compare_exchange(
+            Action::Idle,
+            Action::Writing,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        ) {
+            match e {
+                Action::Idle => continue,
+                Action::ExternallyBlocked => continue,
+                Action::ResizeRequested => continue,
+                a => unreachable!("unexpected action flag for writer: {:?}", a),
+            }
+        }
+
+        let queue = &*self.queue;
+        let start = queue.start.load(Ordering::SeqCst);
+        let n_readers = queue.access.n_readers.load(Ordering::SeqCst);
+        let min_readers = start - n_readers;
+        let max_readers = start + 1;
+
+        let buf = unsafe { &*queue.buf.get() };
+        for i in min_readers..max_readers {
+            let idx = (i.rem_euclid(buf.len() as isize)) as usize;
+            buf[idx].waker.notify_all();
+        }
+
+        self.desc.action.store(Action::Idle, Ordering::SeqCst);
+    }
 }
 
 impl<T> Drop for WriterAccessHandle<T> {
@@ -553,6 +598,8 @@ impl<T> Drop for WriterAccessHandle<T> {
             .lock()
             .log_and_lock()
             .remove(&self.key);
+
+        self.wake_all_readers();
     }
 }
 
