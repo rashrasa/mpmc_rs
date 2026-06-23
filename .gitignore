@@ -8,3 +8,4 @@ aggregation.json
 /output
 .venv
 bench/docs/assets/plots
+bench/docs/assets/**/*.svg
