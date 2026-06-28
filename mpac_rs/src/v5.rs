@@ -149,9 +149,9 @@ pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
 }
 
 #[cfg(feature = "bench")]
-pub struct V4Maker;
+pub struct V5Maker;
 #[cfg(feature = "bench")]
-impl crate::BChannelMaker for V4Maker {
+impl crate::BChannelMaker for V5Maker {
     fn channel<T>(
         &self,
     ) -> (
