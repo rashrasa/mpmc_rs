@@ -86,6 +86,12 @@ mod v4;
 #[cfg(feature = "bench")]
 pub mod v4;
 
+#[cfg(not(feature = "bench"))]
+mod v5;
+
+#[cfg(feature = "bench")]
+pub mod v5;
+
 pub use v4::*;
 
 #[cfg(feature = "bench")]
