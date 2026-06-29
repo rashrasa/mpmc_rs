@@ -131,30 +131,20 @@ fn main() -> anyhow::Result<()> {
             },
         ),
         (
-            "4_4_5_5_4",
+            "3_6_5_5_4",
             test_1::Config {
-                n_sendrs: 4,
-                n_recvrs: 4,
+                n_sendrs: 3,
+                n_recvrs: 6,
                 sendrs_ttl_s: Some(5.0),
                 recvrs_ttl_s: Some(5.0),
                 make_payload: || 9u32,
             },
         ),
         (
-            "1_5_5_5_4",
+            "6_3_5_5_4",
             test_1::Config {
-                n_sendrs: 1,
-                n_recvrs: 5,
-                sendrs_ttl_s: Some(5.0),
-                recvrs_ttl_s: Some(5.0),
-                make_payload: || 9u32,
-            },
-        ),
-        (
-            "5_1_5_5_4",
-            test_1::Config {
-                n_sendrs: 5,
-                n_recvrs: 1,
+                n_sendrs: 6,
+                n_recvrs: 3,
                 sendrs_ttl_s: Some(5.0),
                 recvrs_ttl_s: Some(5.0),
                 make_payload: || 9u32,
