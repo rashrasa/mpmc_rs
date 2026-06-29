@@ -93,12 +93,12 @@ fn main() -> anyhow::Result<()> {
     let mut configs: HashMap<String, ConfigSummary> = HashMap::new();
     for result in results {
         let run = result?;
-        global_bp_max = global_bp_max.max(run.summary.max_backpressure);
-        global_tp_max = global_tp_max.max(run.summary.max_throughput);
-        global_lat_max = global_lat_max.max(run.summary.latency_max);
+        global_bp_max = global_bp_max.max(run.summary.backpressure.max);
+        global_tp_max = global_tp_max.max(run.summary.throughput.max);
+        global_lat_max = global_lat_max.max(run.summary.latency.max);
 
-        global_delay_max = global_delay_max.max(run.summary.recv_max);
-        global_delay_max = global_delay_max.max(run.summary.send_max);
+        global_delay_max = global_delay_max.max(run.summary.recv.max);
+        global_delay_max = global_delay_max.max(run.summary.send.max);
 
         let save_to = save_to_root.join(format!("{}_{}.json", run.version, run.config));
         File::create(&save_to)?.write_all(&serde_json::to_vec(&run)?)?;
@@ -107,11 +107,12 @@ fn main() -> anyhow::Result<()> {
         let config_summary = configs.entry(run.config.clone()).or_default();
 
         config_summary.versions.push(run.version.clone());
-        config_summary.bp_max = config_summary.bp_max.max(run.summary.max_backpressure);
-        config_summary.tp_max = config_summary.tp_max.max(run.summary.max_throughput);
+        config_summary.bp_max = config_summary.bp_max.max(run.summary.backpressure.max);
+        config_summary.tp_max = config_summary.tp_max.max(run.summary.throughput.max);
         config_summary.lat_max = config_summary.lat_max.max(
             *run.summary
-                .latency_p99
+                .latency
+                .p99
                 .iter()
                 .max_by(|a, b| a.total_cmp(b))
                 .unwrap(),
@@ -119,14 +120,16 @@ fn main() -> anyhow::Result<()> {
 
         config_summary.delay_max = config_summary.delay_max.max(
             *run.summary
-                .send_p99
+                .send
+                .p99
                 .iter()
                 .max_by(|a, b| a.total_cmp(b))
                 .unwrap(),
         );
         config_summary.delay_max = config_summary.delay_max.max(
             *run.summary
-                .recv_p99
+                .recv
+                .p99
                 .iter()
                 .max_by(|a, b| a.total_cmp(b))
                 .unwrap(),

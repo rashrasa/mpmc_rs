@@ -24,31 +24,31 @@ pub struct Aggregation {
     pub aggregation_period_s: f64,
     pub n_windows: usize,
 
-    pub t_bp: Vec<f64>,
-    pub backpressure: Vec<f64>,
-    pub max_backpressure: f64,
+    pub backpressure: GaugeSummary,
+    pub throughput: GaugeSummary,
+    pub latency: DistributionSummary,
+    pub send: DistributionSummary,
+    pub recv: DistributionSummary,
+}
 
-    pub t_tp: Vec<f64>,
-    pub throughput: Vec<f64>,
-    pub max_throughput: f64,
+#[derive(Serialize, Deserialize)]
+pub struct DistributionSummary {
+    pub t: Vec<f64>,
+    pub p50: Vec<f64>,
+    pub p50_mean: f64,
+    pub p99: Vec<f64>,
+    pub p99_mean: f64,
+    pub p999: Vec<f64>,
+    pub p999_mean: f64,
+    pub max: f64,
+}
 
-    pub t_lat: Vec<f64>,
-    pub latency_p50: Vec<f64>,
-    pub latency_p99: Vec<f64>,
-    pub latency_p999: Vec<f64>,
-    pub latency_max: f64,
-
-    pub t_send: Vec<f64>,
-    pub send_p50: Vec<f64>,
-    pub send_p99: Vec<f64>,
-    pub send_p999: Vec<f64>,
-    pub send_max: f64,
-
-    pub t_recv: Vec<f64>,
-    pub recv_p50: Vec<f64>,
-    pub recv_p99: Vec<f64>,
-    pub recv_p999: Vec<f64>,
-    pub recv_max: f64,
+#[derive(Serialize, Deserialize)]
+pub struct GaugeSummary {
+    pub t: Vec<f64>,
+    pub values: Vec<f64>,
+    pub mean: f64,
+    pub max: f64,
 }
 
 #[derive(Clone)]
@@ -369,27 +369,48 @@ impl Aggregation {
             aggregation_period_s,
             n_windows: lazy_send_delay.n_buckets(),
 
-            backpressure,
-            max_backpressure: max_bp,
-            t_bp,
-            t_tp,
-            throughput,
-            max_throughput: tp_max,
-            t_lat,
-            latency_p50,
-            latency_p99,
-            latency_p999,
-            latency_max,
-            t_send,
-            send_p50,
-            send_p99,
-            send_p999,
-            send_max,
-            t_recv,
-            recv_p50,
-            recv_p99,
-            recv_p999,
-            recv_max,
+            latency: DistributionSummary {
+                t: t_lat,
+                p50_mean: latency_p50.iter().sum::<f64>() / latency_p50.len() as f64,
+                p99_mean: latency_p99.iter().sum::<f64>() / latency_p99.len() as f64,
+                p999_mean: latency_p999.iter().sum::<f64>() / latency_p999.len() as f64,
+                p50: latency_p50,
+                p99: latency_p99,
+                p999: latency_p999,
+                max: latency_max,
+            },
+            send: DistributionSummary {
+                t: t_send,
+                p50_mean: send_p50.iter().sum::<f64>() / send_p50.len() as f64,
+                p99_mean: send_p99.iter().sum::<f64>() / send_p99.len() as f64,
+                p999_mean: send_p999.iter().sum::<f64>() / send_p999.len() as f64,
+                p50: send_p50,
+                p99: send_p99,
+                p999: send_p999,
+                max: send_max,
+            },
+            recv: DistributionSummary {
+                t: t_recv,
+                p50_mean: recv_p50.iter().sum::<f64>() / recv_p50.len() as f64,
+                p99_mean: recv_p99.iter().sum::<f64>() / recv_p99.len() as f64,
+                p999_mean: recv_p999.iter().sum::<f64>() / recv_p999.len() as f64,
+                p50: recv_p50,
+                p99: recv_p99,
+                p999: recv_p999,
+                max: recv_max,
+            },
+            backpressure: GaugeSummary {
+                t: t_bp,
+                mean: backpressure.iter().sum::<f64>() / backpressure.len() as f64,
+                values: backpressure,
+                max: max_bp,
+            },
+            throughput: GaugeSummary {
+                t: t_tp,
+                mean: throughput.iter().sum::<f64>() / throughput.len() as f64,
+                values: throughput,
+                max: tp_max,
+            },
         })
     }
 }
