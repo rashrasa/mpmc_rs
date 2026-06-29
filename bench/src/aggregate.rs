@@ -21,19 +21,34 @@ const BENCH_DATA_BIN_ROW_LENGTH: usize = 32;
 pub struct Aggregation {
     pub start: f64,
     pub end: f64,
-
-    pub backpressure_values: Vec<(f64, u64)>,
-    pub max_backpressure: u64,
-
     pub aggregation_period_s: f64,
     pub n_windows: usize,
-    pub send_delay: Vec<DistributionMetric>,
-    pub recv_delay: Vec<DistributionMetric>,
 
-    pub data_latency: Vec<DistributionMetric>,
+    pub t_bp: Vec<f64>,
+    pub backpressure: Vec<f64>,
+    pub max_backpressure: f64,
 
-    pub throughput: Vec<GaugeMetric>,
+    pub t_tp: Vec<f64>,
+    pub throughput: Vec<f64>,
     pub max_throughput: f64,
+
+    pub t_lat: Vec<f64>,
+    pub latency_p50: Vec<f64>,
+    pub latency_p99: Vec<f64>,
+    pub latency_p999: Vec<f64>,
+    pub latency_max: f64,
+
+    pub t_send: Vec<f64>,
+    pub send_p50: Vec<f64>,
+    pub send_p99: Vec<f64>,
+    pub send_p999: Vec<f64>,
+    pub send_max: f64,
+
+    pub t_recv: Vec<f64>,
+    pub recv_p50: Vec<f64>,
+    pub recv_p99: Vec<f64>,
+    pub recv_p999: Vec<f64>,
+    pub recv_max: f64,
 }
 
 #[derive(Clone)]
@@ -80,7 +95,7 @@ impl Aggregation {
         let mut start = f64::MAX;
         let mut end = f64::MIN;
 
-        let mut backpressure: Vec<(f64, u64)> = vec![];
+        let mut time_bp: Vec<(f64, u64)> = vec![];
 
         for entry in read_dir(&run_path).context("failed to create path iterator")? {
             let entry = entry.context("failed to read dir entry")?;
@@ -111,7 +126,7 @@ impl Aggregation {
             loop {
                 match next_binary_row(&mut file) {
                     Ok((event_start, event_end, event_id, event_backpressure)) => {
-                        backpressure.push((event_end, event_backpressure));
+                        time_bp.push((event_end, event_backpressure));
                         if constructed_events.len() < event_id as usize + 1 {
                             constructed_events
                                 .resize(event_id as usize + 1, ReconstructedEvent::Empty);
@@ -191,7 +206,6 @@ impl Aggregation {
         let mut lazy_send_delay = LazyWindowedMetric::new(aggregation_period_s, start, end);
         let mut lazy_recv_delay = LazyWindowedMetric::new(aggregation_period_s, start, end);
         let mut lazy_latency = LazyWindowedMetric::new(aggregation_period_s, start, end);
-
         let mut lazy_throughput = LazyWindowedMetric::new(aggregation_period_s, start, end);
 
         let mut empty = 0usize;
@@ -232,43 +246,136 @@ impl Aggregation {
             warn!("found {} skipped event ids", empty);
         }
 
-        backpressure.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
-
-        let throughput = lazy_throughput
+        let tp = lazy_throughput
             .generate_gauged()
             .context("failed to generate aggregation for throughput metric")?;
 
-        let backpressure = dedupe_bp_values(backpressure);
-        let max_bp = backpressure.iter().fold(0, |a, b| a.max(b.1));
+        let max_bp = time_bp.iter().fold(0, |a, b| a.max(b.1));
 
-        let max_tp = throughput.iter().fold(f64::MIN, |a, b| {
-            if let GaugeMetric::Gauge { value, .. } = b {
-                a.max(*value)
-            } else {
-                a
+        let mut t_tp = Vec::with_capacity(tp.len());
+        let mut throughput = Vec::with_capacity(tp.len());
+        let mut tp_max = f64::MIN;
+        for metric in tp {
+            if let GaugeMetric::Gauge { start, value, .. } = metric {
+                t_tp.push(start);
+                throughput.push(value);
+                tp_max = tp_max.max(value);
             }
-        });
+        }
+
+        let mut backpressure = Vec::with_capacity(time_bp.len());
+        let mut t_bp = vec![];
+        for (t, bp) in time_bp {
+            t_bp.push(t);
+            backpressure.push(bp as f64);
+        }
+
+        let send = lazy_send_delay
+            .generate()
+            .context("failed to generate aggregation for send delay metric")?;
+        let recv = lazy_recv_delay
+            .generate()
+            .context("failed to generate aggregation for recv delay metric")?;
+        let latency = lazy_latency
+            .generate()
+            .context("failed to generate aggregation for latency metric")?;
+
+        let mut t_send = Vec::with_capacity(send.len());
+        let mut send_p50 = Vec::with_capacity(send.len());
+        let mut send_p99 = Vec::with_capacity(send.len());
+        let mut send_p999 = Vec::with_capacity(send.len());
+        let mut send_max = f64::MIN;
+        for metric in send {
+            if let DistributionMetric::Distribution {
+                start,
+                p50,
+                p99,
+                p999,
+                max,
+                ..
+            } = metric
+            {
+                t_send.push(start);
+                send_p50.push(p50);
+                send_p99.push(p99);
+                send_p999.push(p999);
+                send_max = send_max.max(max);
+            }
+        }
+
+        let mut t_recv = Vec::with_capacity(recv.len());
+        let mut recv_p50 = Vec::with_capacity(recv.len());
+        let mut recv_p99 = Vec::with_capacity(recv.len());
+        let mut recv_p999 = Vec::with_capacity(recv.len());
+        let mut recv_max = f64::MIN;
+        for metric in recv {
+            if let DistributionMetric::Distribution {
+                start,
+                p50,
+                p99,
+                p999,
+                max,
+                ..
+            } = metric
+            {
+                t_recv.push(start);
+                recv_p50.push(p50);
+                recv_p99.push(p99);
+                recv_p999.push(p999);
+                recv_max = recv_max.max(max);
+            }
+        }
+
+        let mut t_lat = Vec::with_capacity(latency.len());
+        let mut latency_p50 = Vec::with_capacity(latency.len());
+        let mut latency_p99 = Vec::with_capacity(latency.len());
+        let mut latency_p999 = Vec::with_capacity(latency.len());
+        let mut latency_max = f64::MIN;
+        for metric in latency {
+            if let DistributionMetric::Distribution {
+                start,
+                p50,
+                p99,
+                p999,
+                max,
+                ..
+            } = metric
+            {
+                t_lat.push(start);
+                latency_p50.push(p50);
+                latency_p99.push(p99);
+                latency_p999.push(p999);
+                latency_max = latency_max.max(max);
+            }
+        }
 
         Ok(Aggregation {
             start,
             end,
-
-            backpressure_values: backpressure,
-            max_backpressure: max_bp,
-
             aggregation_period_s,
             n_windows: lazy_send_delay.n_buckets(),
-            send_delay: lazy_send_delay
-                .generate()
-                .context("failed to generate aggregation for send delay metric")?,
-            recv_delay: lazy_recv_delay
-                .generate()
-                .context("failed to generate aggregation for recv delay metric")?,
-            data_latency: lazy_latency
-                .generate()
-                .context("failed to generate aggregation for latency metric")?,
+
+            backpressure,
+            max_backpressure: max_bp as f64,
+            t_bp,
+            t_tp,
             throughput,
-            max_throughput: max_tp,
+            max_throughput: tp_max,
+            t_lat,
+            latency_p50,
+            latency_p99,
+            latency_p999,
+            latency_max,
+            t_send,
+            send_p50,
+            send_p99,
+            send_p999,
+            send_max,
+            t_recv,
+            recv_p50,
+            recv_p99,
+            recv_p999,
+            recv_max,
         })
     }
 }

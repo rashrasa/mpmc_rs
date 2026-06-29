@@ -209,7 +209,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     info!(
-        "Benchmarks completed. Ran for {}",
+        "Benchmarks completed. Ran for {}s",
         start.elapsed(&mut clock).as_secs_f64()
     );
 
