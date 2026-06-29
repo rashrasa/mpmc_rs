@@ -22,6 +22,7 @@ def add_ribbon(
     marker_color: str,
     name_prefix: str,
     show_legend: bool,
+    visible,
 ):
     fig.add_trace(
         go.Scatter(
@@ -34,6 +35,7 @@ def add_ribbon(
             legendgroup=name_prefix,
             showlegend=show_legend,
             hoverinfo="skip",
+            visible=visible,
         ),
         row=row,
         col=col,
@@ -47,6 +49,7 @@ def add_ribbon(
             name=f"{name_prefix} p50",
             legendgroup=name_prefix,
             showlegend=show_legend,
+            visible=visible,
         ),
         row=row,
         col=col,
@@ -60,6 +63,7 @@ def add_ribbon(
             name=f"{name_prefix} p99",
             legendgroup=name_prefix,
             showlegend=show_legend,
+            visible=visible,
         ),
         row=row,
         col=col,
@@ -73,6 +77,7 @@ def add_ribbon(
             name=f"{name_prefix} p999",
             legendgroup=name_prefix,
             showlegend=show_legend,
+            visible=visible,
         ),
         row=row,
         col=col,
@@ -161,6 +166,7 @@ def write_plots(row: int, fig, s: dict, config_summary: dict, show_legend: bool)
         marker_color="rgba(99,153,34,0.7)",
         name_prefix="latency",
         show_legend=show_legend,
+        visible=None,
     )
     fig.update_yaxes(
         range=[0, global_lat_max * 1.1],
@@ -191,7 +197,18 @@ def write_plots(row: int, fig, s: dict, config_summary: dict, show_legend: bool)
         col=COL_DELAY,
         secondary_y=True,
     )
-    for key_p50, key_p99, key_p999, t_key, fill, line, faded, marker_color, prefix in [
+    for (
+        key_p50,
+        key_p99,
+        key_p999,
+        t_key,
+        fill,
+        line,
+        faded,
+        marker_color,
+        prefix,
+        visible,
+    ) in [
         (
             "send_p50",
             "send_p99",
@@ -202,6 +219,7 @@ def write_plots(row: int, fig, s: dict, config_summary: dict, show_legend: bool)
             "rgba(55,138,221,0.55)",
             "rgba(55,138,221,0.7)",
             "send",
+            None,
         ),
         (
             "recv_p50",
@@ -213,6 +231,7 @@ def write_plots(row: int, fig, s: dict, config_summary: dict, show_legend: bool)
             "rgba(211,84,126,0.55)",
             "rgba(211,84,126,0.7)",
             "recv",
+            "legendonly",
         ),
     ]:
         add_ribbon(
@@ -229,6 +248,7 @@ def write_plots(row: int, fig, s: dict, config_summary: dict, show_legend: bool)
             marker_color=marker_color,
             name_prefix=prefix,
             show_legend=show_legend,
+            visible=visible,
         )
     fig.update_yaxes(
         range=[0, global_delay_max * 1.1],
@@ -255,7 +275,7 @@ def handle_config(config, agg_dir, output_dir, config_summary):
         column_titles[1]: ["how long until a message is received"],
         column_titles[2]: [
             "how long until a send/recv call returns",
-            "recv delays may include waiting for an item to be pushed. click in the legend to disable",
+            "recv delays include waiting on an empty queue and may not be relevant. click (legend) to re-enable",
         ],
     }
     specs = [
@@ -300,7 +320,7 @@ def handle_config(config, agg_dir, output_dir, config_summary):
                 xanchor="center",
                 yanchor="top",
                 x=x,
-                y=y - i * 0.017,
+                y=y - i * 0.02,
                 font_size=font_size - i * 4,
                 opacity=1.0 - i * 0.4,
                 text=text,
