@@ -12,3 +12,4 @@ bench/docs/assets/**/*.svg
 bench/docs/**/*.hexpat
 bench/docs/**/*.hexproj
 bench/docs/**/*.mlx
+*.lprof
