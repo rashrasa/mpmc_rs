@@ -157,7 +157,7 @@ pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
     let inner = Arc::new(Mutex::new(ChannelInner {
         senders: 1,
         receivers: 1,
-        queue: Vec::with_capacity(1_000_000),
+        queue: Vec::with_capacity(100_000_000),
     }));
     (
         Sender {

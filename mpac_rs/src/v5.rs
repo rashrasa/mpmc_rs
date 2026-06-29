@@ -133,7 +133,7 @@ impl<T> Drop for Sender<T> {
 }
 
 pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
-    let tx_handle = AtomicQueue::with_capacity(1_000_000);
+    let tx_handle = AtomicQueue::with_capacity(100_000_000);
     let rx_handle = tx_handle.clone();
 
     let tx_inner = Arc::new(ChannelInner {
