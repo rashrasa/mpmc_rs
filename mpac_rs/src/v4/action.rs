@@ -36,22 +36,6 @@ impl AtomicAction {
             Err(code) => Err(Action::from_code(code)),
         }
     }
-
-    pub fn compare_exchange_weak(
-        &self,
-        current: Action,
-        new: Action,
-        success: Ordering,
-        failure: Ordering,
-    ) -> Result<Action, Action> {
-        match self
-            .inner
-            .compare_exchange_weak(current.code(), new.code(), success, failure)
-        {
-            Ok(code) => Ok(Action::from_code(code)),
-            Err(code) => Err(Action::from_code(code)),
-        }
-    }
 }
 
 #[repr(u8)]

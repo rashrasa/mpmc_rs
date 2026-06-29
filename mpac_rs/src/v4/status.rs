@@ -36,22 +36,6 @@ impl AtomicStatus {
             Err(code) => Err(Status::from_code(code)),
         }
     }
-
-    pub fn compare_exchange_weak(
-        &self,
-        current: Status,
-        new: Status,
-        success: Ordering,
-        failure: Ordering,
-    ) -> Result<Status, Status> {
-        match self
-            .inner
-            .compare_exchange_weak(current.code(), new.code(), success, failure)
-        {
-            Ok(code) => Ok(Status::from_code(code)),
-            Err(code) => Err(Status::from_code(code)),
-        }
-    }
 }
 
 #[repr(u8)]

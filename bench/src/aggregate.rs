@@ -430,31 +430,3 @@ fn next_binary_row(mut r: impl Read) -> std::io::Result<(f64, f64, u64, u64)> {
         ),
     ))
 }
-
-fn dedupe_bp_values(backpressure: Vec<(f64, u64)>) -> Vec<(f64, u64)> {
-    let bp_n = backpressure.len();
-    if bp_n > 0 {
-        let mut vec = Vec::with_capacity(bp_n);
-
-        let mut backpressure_iter = backpressure.into_iter();
-        let (mut last_t, mut sum_v) = backpressure_iter.next().unwrap();
-        let mut last_n = 1;
-
-        for (t, v) in backpressure_iter {
-            if last_t != t {
-                vec.push((last_t, sum_v / last_n));
-                last_t = t;
-                sum_v = v;
-                last_n = 1;
-            } else {
-                last_n += 1;
-                sum_v += v;
-            }
-        }
-
-        vec.push((last_t, sum_v / last_n));
-        vec
-    } else {
-        vec![]
-    }
-}
