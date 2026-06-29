@@ -10,6 +10,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, AtomicIsize, Ordering},
     },
+    time::Duration,
 };
 
 #[derive(Debug)]
@@ -192,6 +193,32 @@ impl<T> AtomicQueueHandle<T> {
     pub fn len(&self) -> usize {
         self.inner.read().len.load(Ordering::SeqCst).max(0) as usize
     }
+
+    pub fn wake_reads(&self, num_readers: usize) {
+        let inner = self.inner.read();
+        let queue_len = inner.buf.len() as isize;
+
+        let start =
+            (inner.start.load(Ordering::SeqCst) - num_readers as isize).rem_euclid(queue_len);
+        let start = start as usize;
+
+        let end = inner.end.load(Ordering::SeqCst).rem_euclid(queue_len);
+        let end = end as usize;
+
+        if start > end {
+            for location in &inner.buf[start..queue_len as usize] {
+                location.waker.notify_all();
+            }
+
+            for location in &inner.buf[0..end] {
+                location.waker.notify_all();
+            }
+        } else {
+            for location in &inner.buf[start..end] {
+                location.waker.notify_all();
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -211,7 +238,8 @@ impl<T> Location<T> {
             if !check() {
                 return Err(());
             }
-            self.waker.wait(&mut inner);
+            // HACK: Periodic wake-ups
+            self.waker.wait_for(&mut inner, Duration::from_millis(100));
         }
 
         let v = inner

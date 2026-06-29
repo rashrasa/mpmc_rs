@@ -112,6 +112,10 @@ impl<T> Clone for Sender<T> {
 impl<T> Drop for Receiver<T> {
     fn drop(&mut self) {
         let receivers = self.channel.receivers.fetch_sub(1, Ordering::SeqCst);
+
+        self.handle
+            .wake_reads(self.channel.receivers.load(Ordering::SeqCst));
+
         debug!("Receiver count: {}", receivers - 1);
     }
 }
@@ -119,6 +123,9 @@ impl<T> Drop for Receiver<T> {
 impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
         let senders = self.channel.senders.fetch_sub(1, Ordering::SeqCst);
+
+        self.handle
+            .wake_reads(self.channel.receivers.load(Ordering::SeqCst));
 
         #[cfg(feature = "bench")]
         debug!("Sender count: {}", senders - 1);
