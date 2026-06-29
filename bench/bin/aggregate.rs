@@ -89,6 +89,7 @@ fn main() -> anyhow::Result<()> {
     let mut global_bp_max = f64::MIN;
     let mut global_tp_max = f64::MIN;
     let mut global_lat_max = f64::MIN;
+    let mut global_delay_max = f64::MIN;
 
     let mut configs: HashMap<String, ConfigSummary> = HashMap::new();
     for result in results {
@@ -96,8 +97,9 @@ fn main() -> anyhow::Result<()> {
         global_bp_max = global_bp_max.max(run.summary.max_backpressure);
         global_tp_max = global_tp_max.max(run.summary.max_throughput);
         global_lat_max = global_lat_max.max(run.summary.latency_max);
-        global_lat_max = global_lat_max.max(run.summary.recv_max);
-        global_lat_max = global_lat_max.max(run.summary.send_max);
+
+        global_delay_max = global_delay_max.max(run.summary.recv_max);
+        global_delay_max = global_delay_max.max(run.summary.send_max);
 
         let save_to = save_to_root.join(format!("{}_{}.json", run.version, run.config));
         File::create(&save_to)?.write_all(&serde_json::to_vec(&run)?)?;
@@ -108,10 +110,28 @@ fn main() -> anyhow::Result<()> {
         config_summary.versions.push(run.version.clone());
         config_summary.bp_max = config_summary.bp_max.max(run.summary.max_backpressure);
         config_summary.tp_max = config_summary.tp_max.max(run.summary.max_throughput);
+        config_summary.lat_max = config_summary.lat_max.max(
+            *run.summary
+                .latency_p99
+                .iter()
+                .max_by(|a, b| a.total_cmp(b))
+                .unwrap(),
+        );
 
-        config_summary.lat_max = config_summary.lat_max.max(run.summary.latency_max);
-        config_summary.lat_max = config_summary.lat_max.max(run.summary.recv_max);
-        config_summary.lat_max = config_summary.lat_max.max(run.summary.send_max);
+        config_summary.delay_max = config_summary.delay_max.max(
+            *run.summary
+                .send_p99
+                .iter()
+                .max_by(|a, b| a.total_cmp(b))
+                .unwrap(),
+        );
+        config_summary.delay_max = config_summary.delay_max.max(
+            *run.summary
+                .recv_p99
+                .iter()
+                .max_by(|a, b| a.total_cmp(b))
+                .unwrap(),
+        );
     }
     rayon::spawn(move || {
         File::create(save_to_root.join("summary.json"))
@@ -121,6 +141,7 @@ fn main() -> anyhow::Result<()> {
                     global_bp_max,
                     global_tp_max,
                     global_lat_max,
+                    global_delay_max,
                     configs,
                 })
                 .unwrap(),
@@ -137,15 +158,19 @@ struct Summary {
     global_bp_max: f64,
     global_tp_max: f64,
     global_lat_max: f64,
+    global_delay_max: f64,
 
     configs: HashMap<String, ConfigSummary>,
 }
 
+/// This data is extremely specific to plotting the data
+/// and may not accurately reflect the field names.
 #[derive(Serialize, Deserialize, Debug)]
 struct ConfigSummary {
     bp_max: f64,
     tp_max: f64,
     lat_max: f64,
+    delay_max: f64,
     versions: Vec<String>,
 }
 
@@ -155,6 +180,7 @@ impl Default for ConfigSummary {
             bp_max: f64::MIN,
             tp_max: f64::MIN,
             lat_max: f64::MIN,
+            delay_max: f64::MIN,
             versions: vec![],
         }
     }
@@ -186,7 +212,7 @@ fn run_work(config_entry: DirEntry, version_name: String) -> anyhow::Result<Run>
                         config_path
                     )))?
             ),
-            0.01,
+            0.25,
         )
         .context(format!(
             "could not run aggregation for version \"{}\" config \"{}\"",

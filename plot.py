@@ -11,6 +11,7 @@ import threading
 def add_ribbon(
     fig,
     row: int,
+    col: int,
     times: list,
     p50: list,
     p99: list,
@@ -18,6 +19,7 @@ def add_ribbon(
     fill_color: str,
     line_color: str,
     line_color_faded: str,
+    marker_color: str,
     name_prefix: str,
     show_legend: bool,
 ):
@@ -34,7 +36,7 @@ def add_ribbon(
             hoverinfo="skip",
         ),
         row=row,
-        col=1,
+        col=col,
     )
     fig.add_trace(
         go.Scatter(
@@ -47,7 +49,7 @@ def add_ribbon(
             showlegend=show_legend,
         ),
         row=row,
-        col=1,
+        col=col,
     )
     fig.add_trace(
         go.Scatter(
@@ -60,91 +62,137 @@ def add_ribbon(
             showlegend=show_legend,
         ),
         row=row,
-        col=1,
+        col=col,
     )
     fig.add_trace(
         go.Scatter(
             x=times,
             y=p999,
             mode="markers",
-            marker=dict(color="rgba(186, 117, 23, 0.7)", size=4, symbol="circle"),
+            marker=dict(color=marker_color, size=4, symbol="circle"),
             name=f"{name_prefix} p999",
             legendgroup=name_prefix,
             showlegend=show_legend,
         ),
         row=row,
-        col=1,
+        col=col,
     )
 
 
-def write_plots(
-    lat_row, lat_fig, tp_row, tp_fig, s: dict, config_summary: dict, show_legend: bool
-):
+COL_THROUGHPUT = 1
+COL_LATENCY = 2
+COL_DELAY = 3
+
+
+def write_plots(row: int, fig, s: dict, config_summary: dict, show_legend: bool):
     global_bp_max = config_summary["bp_max"]
     global_tp_max = config_summary["tp_max"]
     global_lat_max = config_summary["lat_max"]
-    # throughput
-    tp_fig.add_trace(
+    global_delay_max = config_summary["delay_max"]  # NEW: add to config summary
+
+    # --- Column 1: Throughput + backpressure overlay ---
+    fig.add_trace(
         go.Scatter(
             x=s["t_tp"],
             y=s["throughput"],
             mode="lines",
             name="throughput",
+            legendgroup="throughput",
             showlegend=show_legend,
         ),
-        row=tp_row,
-        col=1,
+        row=row,
+        col=COL_THROUGHPUT,
         secondary_y=False,
     )
-    tp_fig.add_trace(
+    fig.add_trace(
         go.Bar(
             x=s["t_bp"],
             y=s["backpressure"],
             name="backpressure",
-            marker_color="rgba(255,0,0,0.3)",
+            marker_color="rgba(80,80,80,0.25)",
+            legendgroup="backpressure",
             showlegend=show_legend,
         ),
-        row=tp_row,
-        col=1,
+        row=row,
+        col=COL_THROUGHPUT,
         secondary_y=True,
     )
-    tp_fig.update_yaxes(
-        range=[0, global_tp_max * 1.05], row=tp_row, col=1, secondary_y=False
+    fig.update_yaxes(
+        range=[0, global_tp_max * 1.05],
+        title_text="throughput",
+        row=row,
+        col=COL_THROUGHPUT,
+        secondary_y=False,
     )
-    tp_fig.update_yaxes(
+    fig.update_yaxes(
         range=[0, global_bp_max * 1.05],
-        row=tp_row,
-        col=1,
-        secondary_y=True,
+        title_text="backpressure",
         showgrid=False,
+        row=row,
+        col=COL_THROUGHPUT,
+        secondary_y=True,
     )
-    # latency / send / recv (rows lat_row, lat_row+1, lat_row+2)
-    lat_fig.add_trace(
+
+    # --- Column 2: Latency ribbon + backpressure overlay ---
+    fig.add_trace(
         go.Bar(
             x=s["t_bp"],
             y=s["backpressure"],
             name="backpressure",
-            marker_color="rgba(255, 80, 80, 0.25)",
-            showlegend=show_legend,
+            marker_color="rgba(80,80,80,0.25)",
+            legendgroup="backpressure",
+            showlegend=False,
         ),
-        row=lat_row,
-        col=1,
+        row=row,
+        col=COL_LATENCY,
         secondary_y=True,
     )
-    for row, key_p50, key_p99, key_p999, t_key, fill, line, faded, prefix in [
-        (
-            lat_row,
-            "latency_p50",
-            "latency_p99",
-            "latency_p999",
-            "t_lat",
-            "rgba(99,153,34,0.18)",
-            "rgba(99,153,34,1.0)",
-            "rgba(99,153,34,0.55)",
-            "latency",
+    add_ribbon(
+        fig,
+        row,
+        COL_LATENCY,
+        s["t_lat"],
+        s["latency_p50"],
+        s["latency_p99"],
+        s["latency_p999"],
+        fill_color="rgba(99,153,34,0.18)",
+        line_color="rgba(99,153,34,1.0)",
+        line_color_faded="rgba(99,153,34,0.55)",
+        marker_color="rgba(99,153,34,0.7)",
+        name_prefix="latency",
+        show_legend=show_legend,
+    )
+    fig.update_yaxes(
+        range=[0, global_lat_max * 1.1],
+        title_text="latency (s)",
+        row=row,
+        col=COL_LATENCY,
+        secondary_y=False,
+    )
+    fig.update_yaxes(
+        range=[0, global_bp_max * 1.05],
+        showgrid=False,
+        row=row,
+        col=COL_LATENCY,
+        secondary_y=True,
+    )
+
+    # --- Column 3: Send + recv delay ribbons + backpressure overlay ---
+    fig.add_trace(
+        go.Bar(
+            x=s["t_bp"],
+            y=s["backpressure"],
+            name="backpressure",
+            marker_color="rgba(80, 80, 80, 0.25)",
+            legendgroup="backpressure",
+            showlegend=False,
         ),
+        row=row,
+        col=COL_DELAY,
+        secondary_y=True,
+    )
+    for key_p50, key_p99, key_p999, t_key, fill, line, faded, marker_color, prefix in [
         (
-            lat_row,
             "send_p50",
             "send_p99",
             "send_p999",
@@ -152,10 +200,10 @@ def write_plots(
             "rgba(55,138,221,0.18)",
             "rgba(55,138,221,1.0)",
             "rgba(55,138,221,0.55)",
+            "rgba(55,138,221,0.7)",
             "send",
         ),
         (
-            lat_row,
             "recv_p50",
             "recv_p99",
             "recv_p999",
@@ -163,12 +211,14 @@ def write_plots(
             "rgba(211,84,126,0.18)",
             "rgba(211,84,126,1.0)",
             "rgba(211,84,126,0.55)",
+            "rgba(211,84,126,0.7)",
             "recv",
         ),
     ]:
         add_ribbon(
-            lat_fig,
+            fig,
             row,
+            COL_DELAY,
             s[t_key],
             s[key_p50],
             s[key_p99],
@@ -176,63 +226,92 @@ def write_plots(
             fill_color=fill,
             line_color=line,
             line_color_faded=faded,
+            marker_color=marker_color,
             name_prefix=prefix,
             show_legend=show_legend,
         )
-        lat_fig.update_yaxes(
-            range=[0, global_lat_max * 1.1],
-            title_text="latency (s)",
-            row=row,
-            col=1,
-            secondary_y=False,
-        )
-    lat_fig.update_yaxes(
+    fig.update_yaxes(
+        range=[0, global_delay_max * 1.1],
+        title_text="delay (s)",
+        row=row,
+        col=COL_DELAY,
+        secondary_y=False,
+    )
+    fig.update_yaxes(
         range=[0, global_bp_max * 1.05],
-        title_text="backpressure",
         showgrid=False,
-        row=lat_row,
-        col=1,
+        row=row,
+        col=COL_DELAY,
         secondary_y=True,
     )
 
 
-def write_figure(n, tp_fig, lat_fig, output_dir: path.Path, config):
-    tp_fig.update_layout(
-        hovermode="x unified",
-    )
-    lat_fig.update_layout(
-        hovermode="x unified",
-    )
-    tp_fig.write_html(output_dir / f"{config}_throughput.html")
-    lat_fig.write_html(output_dir / f"{config}_latency.html")
-    print(f"wrote {config}")
-
-
 def handle_config(config, agg_dir, output_dir, config_summary):
-    versions = config_summary["versions"]
-    versions = sorted(versions)
+    versions = sorted(config_summary["versions"])
     n_rows = len(versions)
-    tp_fig = make_subplots(
+    column_titles = ["Throughput Rate", "Latency", "Send / Recv Delay"]
+    column_subtitles = {
+        column_titles[0]: ["estimated number of requests handled per second"],
+        column_titles[1]: ["how long until a message is received"],
+        column_titles[2]: [
+            "how long until a send/recv call returns",
+            "recv delays may include waiting for an item to be pushed. click in the legend to disable",
+        ],
+    }
+    specs = [
+        [{"secondary_y": True}, {"secondary_y": True}, {"secondary_y": True}]
+        for _ in range(n_rows)
+    ]
+    subplot_titles = []
+    for i in range(0, 3 * n_rows):
+        subplot_titles.append(versions[i // 3])
+    fig = make_subplots(
         rows=n_rows,
-        subplot_titles=versions,
-        row_heights=[400 for _ in range(len(versions))],
-        vertical_spacing=0.2 / n_rows,
-        shared_yaxes=True,
-        specs=[[{"secondary_y": True}] for _ in range(len(versions))],
+        cols=3,
+        column_titles=column_titles,
+        subplot_titles=subplot_titles,
+        row_heights=[200 for _ in range(n_rows)],
+        vertical_spacing=0.25 / max(n_rows, 1),
+        horizontal_spacing=0.06,
+        specs=specs,
     )
-    lat_fig = make_subplots(
-        rows=n_rows,
-        subplot_titles=versions,
-        row_heights=[400 for _ in range(len(versions))],
-        vertical_spacing=0.2 / n_rows,
-        shared_yaxes=True,
-        specs=[[{"secondary_y": True}] for _ in range(len(versions))],
-    )
+
     for i, version in enumerate(versions):
         run = json.loads(open(agg_dir / f"{version}_{config}.json").read())["summary"]
-        write_plots(i + 1, lat_fig, i + 1, tp_fig, run, config_summary, False)
+        write_plots(i + 1, fig, run, config_summary, show_legend=(i == 0))
 
-    write_figure(n_rows, tp_fig, lat_fig, output_dir, config)
+    annotations_to_add = []
+
+    def for_annotation(a):
+        if a.text in column_titles:
+            a.update(
+                y=1.06,
+                font_size=24,
+            )
+            annotations_to_add.append((a.x, a.y, 16, column_subtitles[a.text]))
+
+    fig.for_each_annotation(for_annotation)
+
+    for x, y, font_size, subtitles in annotations_to_add:
+        for i, text in enumerate(subtitles):
+            fig.add_annotation(
+                xref="paper",
+                yref="paper",
+                xanchor="center",
+                yanchor="top",
+                x=x,
+                y=y - i * 0.017,
+                font_size=font_size - i * 4,
+                opacity=1.0 - i * 0.4,
+                text=text,
+                showarrow=False,
+            )
+
+    fig.update_layout(hovermode="x unified", height=200 * n_rows)
+
+    out_path = output_dir / f"{config}.html"
+    fig.write_html(out_path)
+    print(f"wrote {out_path}")
 
 
 def main():
@@ -245,7 +324,6 @@ def main():
 
     threads: list[threading.Thread] = []
     for config, config_summary in configs.items():
-        versions = config_summary["versions"]
         t = threading.Thread(
             target=handle_config, args=(config, agg_dir, output_dir, config_summary)
         )
