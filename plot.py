@@ -98,8 +98,8 @@ def write_plots(row: int, fig, s: dict, config_summary: dict, show_legend: bool)
     # --- Column 1: Throughput + backpressure overlay ---
     fig.add_trace(
         go.Scatter(
-            x=s["t_tp"],
-            y=s["throughput"],
+            x=s["throughput"]["t"],
+            y=s["throughput"]["values"],
             mode="lines",
             name="throughput",
             legendgroup="throughput",
@@ -111,8 +111,8 @@ def write_plots(row: int, fig, s: dict, config_summary: dict, show_legend: bool)
     )
     fig.add_trace(
         go.Bar(
-            x=s["t_bp"],
-            y=s["backpressure"],
+            x=s["backpressure"]["t"],
+            y=s["backpressure"]["values"],
             name="backpressure",
             marker_color="rgba(80,80,80,0.1)",
             legendgroup="backpressure",
@@ -141,8 +141,8 @@ def write_plots(row: int, fig, s: dict, config_summary: dict, show_legend: bool)
     # --- Column 2: Latency ribbon + backpressure overlay ---
     fig.add_trace(
         go.Bar(
-            x=s["t_bp"],
-            y=s["backpressure"],
+            x=s["backpressure"]["t"],
+            y=s["backpressure"]["values"],
             name="backpressure",
             marker_color="rgba(80,80,80,0.1)",
             legendgroup="backpressure",
@@ -156,10 +156,10 @@ def write_plots(row: int, fig, s: dict, config_summary: dict, show_legend: bool)
         fig,
         row,
         COL_LATENCY,
-        s["t_lat"],
-        s["latency_p50"],
-        s["latency_p99"],
-        s["latency_p999"],
+        s["latency"]["t"],
+        s["latency"]["p50"],
+        s["latency"]["p99"],
+        s["latency"]["p999"],
         fill_color="rgba(99,153,34,0.18)",
         line_color="rgba(99,153,34,1.0)",
         line_color_faded="rgba(99,153,34,0.55)",
@@ -186,8 +186,8 @@ def write_plots(row: int, fig, s: dict, config_summary: dict, show_legend: bool)
     # --- Column 3: Send + recv delay ribbons + backpressure overlay ---
     fig.add_trace(
         go.Bar(
-            x=s["t_bp"],
-            y=s["backpressure"],
+            x=s["backpressure"]["t"],
+            y=s["backpressure"]["values"],
             name="backpressure",
             marker_color="rgba(80, 80, 80, 0.1)",
             legendgroup="backpressure",
@@ -198,10 +198,7 @@ def write_plots(row: int, fig, s: dict, config_summary: dict, show_legend: bool)
         secondary_y=True,
     )
     for (
-        key_p50,
-        key_p99,
-        key_p999,
-        t_key,
+        key,
         fill,
         line,
         faded,
@@ -210,10 +207,7 @@ def write_plots(row: int, fig, s: dict, config_summary: dict, show_legend: bool)
         visible,
     ) in [
         (
-            "send_p50",
-            "send_p99",
-            "send_p999",
-            "t_send",
+            "send",
             "rgba(55,138,221,0.18)",
             "rgba(55,138,221,1.0)",
             "rgba(55,138,221,0.55)",
@@ -222,10 +216,7 @@ def write_plots(row: int, fig, s: dict, config_summary: dict, show_legend: bool)
             None,
         ),
         (
-            "recv_p50",
-            "recv_p99",
-            "recv_p999",
-            "t_recv",
+            "recv",
             "rgba(211,84,126,0.18)",
             "rgba(211,84,126,1.0)",
             "rgba(211,84,126,0.55)",
@@ -238,10 +229,10 @@ def write_plots(row: int, fig, s: dict, config_summary: dict, show_legend: bool)
             fig,
             row,
             COL_DELAY,
-            s[t_key],
-            s[key_p50],
-            s[key_p99],
-            s[key_p999],
+            s[key]["t"],
+            s[key]["p50"],
+            s[key]["p99"],
+            s[key]["p999"],
             fill_color=fill,
             line_color=line,
             line_color_faded=faded,
