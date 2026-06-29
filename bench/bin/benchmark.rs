@@ -94,6 +94,7 @@ fn main() -> anyhow::Result<()> {
         v2 = true;
         v3 = true;
         v4 = true;
+        v5 = true;
         crossbeam = true;
     }
 
@@ -120,42 +121,52 @@ fn main() -> anyhow::Result<()> {
     // version names: tx_rx_sttl_rttl_size
     let configs = vec![
         (
-            "3_3_5_5_4",
+            "1_1_5_5_4",
             test_1::Config {
-                n_senders: 3,
-                n_receivers: 3,
-                sender_ttl_s: Some(5.0),
-                receiver_ttl_s: Some(5.0),
+                n_sendrs: 1,
+                n_recvrs: 1,
+                sendrs_ttl_s: Some(5.0),
+                recvrs_ttl_s: Some(5.0),
                 make_payload: || 9u32,
             },
         ),
         (
-            "1_3_5_5_4",
+            "4_4_5_5_4",
             test_1::Config {
-                n_senders: 1,
-                n_receivers: 3,
-                sender_ttl_s: Some(5.0),
-                receiver_ttl_s: Some(5.0),
+                n_sendrs: 4,
+                n_recvrs: 4,
+                sendrs_ttl_s: Some(5.0),
+                recvrs_ttl_s: Some(5.0),
                 make_payload: || 9u32,
             },
         ),
         (
-            "3_1_5_5_4",
+            "1_5_5_5_4",
             test_1::Config {
-                n_senders: 3,
-                n_receivers: 1,
-                sender_ttl_s: Some(5.0),
-                receiver_ttl_s: Some(5.0),
+                n_sendrs: 1,
+                n_recvrs: 5,
+                sendrs_ttl_s: Some(5.0),
+                recvrs_ttl_s: Some(5.0),
                 make_payload: || 9u32,
             },
         ),
         (
-            "7_7_10_10_4",
+            "5_1_5_5_4",
             test_1::Config {
-                n_senders: 7,
-                n_receivers: 7,
-                sender_ttl_s: Some(10.0),
-                receiver_ttl_s: Some(10.0),
+                n_sendrs: 5,
+                n_recvrs: 1,
+                sendrs_ttl_s: Some(5.0),
+                recvrs_ttl_s: Some(5.0),
+                make_payload: || 9u32,
+            },
+        ),
+        (
+            "7_7_5_5_4",
+            test_1::Config {
+                n_sendrs: 7,
+                n_recvrs: 7,
+                sendrs_ttl_s: Some(5.0),
+                recvrs_ttl_s: Some(5.0),
                 make_payload: || 9u32,
             },
         ),

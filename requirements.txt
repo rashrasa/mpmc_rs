@@ -1,2 +1,1 @@
 plotly
-line_profiler

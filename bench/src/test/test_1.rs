@@ -12,10 +12,10 @@ use crate::runner::BenchRunner;
 
 #[derive(Clone)]
 pub struct Config<T> {
-    pub n_senders: usize,
-    pub n_receivers: usize,
-    pub sender_ttl_s: Option<f64>,
-    pub receiver_ttl_s: Option<f64>,
+    pub n_sendrs: usize,
+    pub n_recvrs: usize,
+    pub sendrs_ttl_s: Option<f64>,
+    pub recvrs_ttl_s: Option<f64>,
     pub make_payload: fn() -> T,
 }
 
@@ -35,18 +35,17 @@ where
 {
     let mut handles = vec![];
 
-    if config.receiver_ttl_s.is_none() && config.sender_ttl_s.is_none() {
+    if config.recvrs_ttl_s.is_none() && config.sendrs_ttl_s.is_none() {
         return Err(anyhow::Error::msg(
             "Time-To-Live must be set for either senders, receivers, or both.",
         ));
     }
 
-    let start_flag: Arc<Barrier> =
-        Arc::new(Barrier::new(config.n_receivers + config.n_senders + 1));
+    let start_flag: Arc<Barrier> = Arc::new(Barrier::new(config.n_recvrs + config.n_sendrs + 1));
 
     let (tx, rx) = maker.channel();
 
-    for i in 0..config.n_senders {
+    for i in 0..config.n_sendrs {
         let runner = runner.spawn_runner(format!("tx_runner_{}", i));
         let tx = tx.clone();
         let config = config.clone();
@@ -57,7 +56,7 @@ where
         handles.push(s_h);
     }
 
-    for i in 0..config.n_receivers {
+    for i in 0..config.n_recvrs {
         let rx = rx.clone();
         let runner = runner.spawn_runner(format!("rx_runner_{}", i));
         let config = config.clone();
@@ -96,7 +95,7 @@ fn sender_thread<T: Send>(
         if sender_work(&mut tx, &mut runner, make_payload).is_err() {
             break;
         }
-        if !keep_sender_alive(&config.sender_ttl_s, &start) {
+        if !keep_sender_alive(&config.sendrs_ttl_s, &start) {
             break;
         }
     }
@@ -158,7 +157,7 @@ fn receiver_thread<T: Send>(
         if receiver_work(&mut rx, &mut runner).is_err() {
             break;
         }
-        if !keep_receiver_alive(&config.receiver_ttl_s, &start) {
+        if !keep_receiver_alive(&config.recvrs_ttl_s, &start) {
             break;
         }
     }
