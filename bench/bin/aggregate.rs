@@ -138,16 +138,7 @@ fn main() -> anyhow::Result<()> {
     rayon::spawn(move || {
         File::create(save_to_root.join("summary.json"))
             .unwrap()
-            .write_all(
-                &serde_json::to_vec(&Summary {
-                    global_bp_max,
-                    global_tp_max,
-                    global_lat_max,
-                    global_delay_max,
-                    configs,
-                })
-                .unwrap(),
-            )
+            .write_all(&serde_json::to_vec(&Summary { configs }).unwrap())
             .unwrap()
     });
 
@@ -157,11 +148,6 @@ fn main() -> anyhow::Result<()> {
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Summary {
-    global_bp_max: f64,
-    global_tp_max: f64,
-    global_lat_max: f64,
-    global_delay_max: f64,
-
     configs: HashMap<String, ConfigSummary>,
 }
 
