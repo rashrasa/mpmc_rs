@@ -21,7 +21,6 @@ fn main() -> anyhow::Result<()> {
         .filter_level(log::LevelFilter::Debug)
         .init();
     ThreadPoolBuilder::new()
-        .num_threads(8)
         .build_global()
         .context("unable to build thread pool")?;
     let path = std::env::args()
