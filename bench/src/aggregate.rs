@@ -77,9 +77,20 @@ impl Aggregation {
     /// expects directory to include tx_runner_n and rx_runner_n files only
     pub fn from_directory(
         run_path: impl AsRef<Path>,
+        run_bin_path: impl AsRef<Path>,
         aggregation_period_s: f64,
     ) -> anyhow::Result<Aggregation> {
         let mut estimated_len: usize = 0;
+        let mut start = [0u8; 8];
+        let mut end = [0u8; 8];
+        let mut reader = BufReader::new(File::open(run_bin_path)?);
+        let read = reader.read(&mut start)?;
+        assert_eq!(8, read);
+        let read = reader.read(&mut end)?;
+        assert_eq!(8, read);
+
+        let start = f64::from_le_bytes(start);
+        let end = f64::from_le_bytes(end);
 
         for entry in read_dir(&run_path).context("failed to create path iterator")? {
             let entry = entry?;
@@ -92,10 +103,7 @@ impl Aggregation {
         // event numbers start from 0 and go up by 1, we can just use a cheap vec
         let mut constructed_events: Vec<ReconstructedEvent> = Vec::with_capacity(estimated_len);
 
-        let mut start = f64::MAX;
-        let mut end = f64::MIN;
-
-        let mut time_bp: Vec<(f64, u64)> = vec![];
+        let mut bp = LazyWindowedMetric::new(aggregation_period_s, start, end);
 
         for entry in read_dir(&run_path).context("failed to create path iterator")? {
             let entry = entry.context("failed to read dir entry")?;
@@ -118,15 +126,13 @@ impl Aggregation {
 
             let mut file = BufReader::new(file);
 
-            let (runner_start, runner_end, _, _) = next_binary_row(&mut file)?;
-
-            start = start.min(runner_start);
-            end = end.max(runner_end);
+            // discard header row
+            let _ = next_binary_row(&mut file)?;
 
             loop {
                 match next_binary_row(&mut file) {
                     Ok((event_start, event_end, event_id, event_backpressure)) => {
-                        time_bp.push((event_end, event_backpressure));
+                        bp.add(event_backpressure as f64, event_end)?;
                         if constructed_events.len() < event_id as usize + 1 {
                             constructed_events
                                 .resize(event_id as usize + 1, ReconstructedEvent::Empty);
@@ -247,10 +253,10 @@ impl Aggregation {
         }
 
         let tp = lazy_throughput
-            .generate_gauged()
+            .generate_gauged(|a, b| {
+                *a += b;
+            })
             .context("failed to generate aggregation for throughput metric")?;
-
-        let max_bp = time_bp.iter().fold(0, |a, b| a.max(b.1));
 
         let mut t_tp = Vec::with_capacity(tp.len());
         let mut throughput = Vec::with_capacity(tp.len());
@@ -263,11 +269,19 @@ impl Aggregation {
             }
         }
 
-        let mut backpressure = Vec::with_capacity(time_bp.len());
-        let mut t_bp = vec![];
-        for (t, bp) in time_bp {
-            t_bp.push(t);
-            backpressure.push(bp as f64);
+        let bp = bp
+            .generate_gauged(|a, b| *a = a.max(*b))
+            .context("failed to generate backpressure metrics")?;
+
+        let mut backpressure = Vec::with_capacity(bp.len());
+        let mut t_bp = Vec::with_capacity(bp.len());
+        let mut max_bp = f64::MIN;
+        for metric in bp {
+            if let GaugeMetric::Gauge { value, start, .. } = metric {
+                t_bp.push(start);
+                backpressure.push(value);
+                max_bp = max_bp.max(value);
+            }
         }
 
         let send = lazy_send_delay
@@ -356,7 +370,7 @@ impl Aggregation {
             n_windows: lazy_send_delay.n_buckets(),
 
             backpressure,
-            max_backpressure: max_bp as f64,
+            max_backpressure: max_bp,
             t_bp,
             t_tp,
             throughput,

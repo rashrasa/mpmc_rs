@@ -194,7 +194,10 @@ impl LazyWindowedMetric {
         Ok(result)
     }
 
-    pub fn generate_gauged(&self) -> anyhow::Result<Vec<GaugeMetric>> {
+    pub fn generate_gauged<F>(&self, mut agg: F) -> anyhow::Result<Vec<GaugeMetric>>
+    where
+        F: FnMut(&mut f64, &f64),
+    {
         let mut result = vec![];
         for bucket in &self.buckets {
             if bucket.values.is_empty() {
@@ -207,7 +210,7 @@ impl LazyWindowedMetric {
 
             let mut value = 0.0;
             for v in bucket.values.iter() {
-                value += v;
+                agg(&mut value, v);
             }
 
             result.push(GaugeMetric::Gauge {

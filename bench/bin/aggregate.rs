@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fs::{self, DirEntry, File},
     io::Write,
     path::{Path, PathBuf},
@@ -75,10 +76,8 @@ fn main() -> anyhow::Result<()> {
                     let version_name = version_name.clone();
                     if config_entry.path().is_dir() {
                         s.spawn(|_| {
-                            results
-                                .lock()
-                                .unwrap()
-                                .push(run_work(config_entry, version_name))
+                            let run = run_work(config_entry, version_name);
+                            results.lock().unwrap().push(run);
                         });
                     }
                 }
@@ -91,6 +90,7 @@ fn main() -> anyhow::Result<()> {
     let mut global_tp_max = f64::MIN;
     let mut global_lat_max = f64::MIN;
 
+    let mut configs: HashMap<String, ConfigSummary> = HashMap::new();
     for result in results {
         let run = result?;
         global_bp_max = global_bp_max.max(run.summary.max_backpressure);
@@ -102,13 +102,31 @@ fn main() -> anyhow::Result<()> {
         let save_to = save_to_root.join(format!("{}_{}.json", run.version, run.config));
         File::create(&save_to)?.write_all(&serde_json::to_vec(&run)?)?;
         debug!("wrote run result to {:?}", save_to);
-    }
 
-    File::create(save_to_root.join("summary.json"))?.write_all(&serde_json::to_vec(&Summary {
-        global_bp_max,
-        global_tp_max,
-        global_lat_max,
-    })?)?;
+        let config_summary = configs.entry(run.config.clone()).or_default();
+
+        config_summary.versions.push(run.version.clone());
+        config_summary.bp_max = config_summary.bp_max.max(run.summary.max_backpressure);
+        config_summary.tp_max = config_summary.tp_max.max(run.summary.max_throughput);
+
+        config_summary.lat_max = config_summary.lat_max.max(run.summary.latency_max);
+        config_summary.lat_max = config_summary.lat_max.max(run.summary.recv_max);
+        config_summary.lat_max = config_summary.lat_max.max(run.summary.send_max);
+    }
+    rayon::spawn(move || {
+        File::create(save_to_root.join("summary.json"))
+            .unwrap()
+            .write_all(
+                &serde_json::to_vec(&Summary {
+                    global_bp_max,
+                    global_tp_max,
+                    global_lat_max,
+                    configs,
+                })
+                .unwrap(),
+            )
+            .unwrap()
+    });
 
     debug!("ran aggregation in {:.2}s", start.elapsed().as_secs_f64());
     Ok(())
@@ -119,6 +137,27 @@ struct Summary {
     global_bp_max: f64,
     global_tp_max: f64,
     global_lat_max: f64,
+
+    configs: HashMap<String, ConfigSummary>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct ConfigSummary {
+    bp_max: f64,
+    tp_max: f64,
+    lat_max: f64,
+    versions: Vec<String>,
+}
+
+impl Default for ConfigSummary {
+    fn default() -> Self {
+        Self {
+            bp_max: f64::MIN,
+            tp_max: f64::MIN,
+            lat_max: f64::MIN,
+            versions: vec![],
+        }
+    }
 }
 
 fn run_work(config_entry: DirEntry, version_name: String) -> anyhow::Result<Run> {
@@ -135,7 +174,21 @@ fn run_work(config_entry: DirEntry, version_name: String) -> anyhow::Result<Run>
             )))?;
         let config_name = config_path_str.replace("config_", "");
 
-        let summary = Aggregation::from_directory(&config_path, 0.1).context(format!(
+        let summary = Aggregation::from_directory(
+            &config_path,
+            format!(
+                "{}.bin",
+                config_path
+                    .clone()
+                    .into_string()
+                    .map_err(|_| anyhow::Error::msg(format!(
+                        "could not transform {:?} into string",
+                        config_path
+                    )))?
+            ),
+            0.01,
+        )
+        .context(format!(
             "could not run aggregation for version \"{}\" config \"{}\"",
             version_name, config_name
         ))?;
