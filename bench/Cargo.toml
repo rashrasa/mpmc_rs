@@ -8,6 +8,7 @@ anyhow = "1.0.102"
 env_logger = "0.11.10"
 fast_time = "0.1.23"
 log = "0.4.32"
+memmap2 = "0.9.11"
 mpmc_rs = { path = "../mpmc_rs", features = ["bench"] }
 rayon = "1.12.0"
 serde = { version = "1.0.228", features = ["derive"] }
