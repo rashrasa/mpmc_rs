@@ -5,7 +5,9 @@ members = ["bench", "mpmc_rs", "examples/usage"]
 [profile.release]
 debug = true
 opt-level = 3
-lto = "fat"
+
+# compile times are too long
+lto = "thin"
 
 [profile.bench]
 opt-level = 3
