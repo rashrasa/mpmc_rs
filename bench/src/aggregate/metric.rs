@@ -146,9 +146,10 @@ impl LazyWindowedMetric {
         Ok(())
     }
 
+    /// Excludes final bucket
     pub fn generate(&mut self) -> anyhow::Result<Vec<DistributionMetric>> {
         let mut result = vec![];
-        for bucket in &mut self.buckets {
+        for bucket in self.buckets.iter_mut().take(1.max(self.n_buckets - 1)) {
             if bucket.values.is_empty() {
                 result.push(DistributionMetric::NoEvents {
                     start: bucket.start,
@@ -192,12 +193,13 @@ impl LazyWindowedMetric {
         Ok(result)
     }
 
+    /// Excludes final bucket
     pub fn generate_gauged<F>(&mut self, mut agg: F) -> anyhow::Result<Vec<GaugeMetric>>
     where
         F: FnMut(std::slice::Iter<f64>, &f64, &f64) -> f64,
     {
         let mut result = vec![];
-        for bucket in &mut self.buckets {
+        for bucket in self.buckets.iter_mut().take(1.max(self.n_buckets - 1)) {
             if bucket.values.is_empty() {
                 result.push(GaugeMetric::NoEvents {
                     start: bucket.start,
