@@ -207,7 +207,7 @@ impl LazyWindowedMetric {
             }
             bucket.values.retain(|v| !v.is_nan());
 
-            let value = agg(bucket.values.iter(), &self.start, &self.end);
+            let value = agg(bucket.values.iter(), &bucket.start, &bucket.end);
 
             result.push(GaugeMetric::Gauge {
                 start: bucket.start,
