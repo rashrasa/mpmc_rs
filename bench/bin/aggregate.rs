@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     fs::{self, DirEntry, File},
     io::Write,
     path::{Path, PathBuf},
@@ -9,8 +8,8 @@ use std::{
 };
 
 use anyhow::Context;
-use bench::aggregate::Aggregation;
-use log::debug;
+use bench::aggregate::{Aggregation, DistributionSummary, GaugeSummary};
+use log::{debug, error};
 use rayon::ThreadPoolBuilder;
 use serde::{Deserialize, Serialize};
 
@@ -75,7 +74,14 @@ fn main() -> anyhow::Result<()> {
                     let version_name = version_name.clone();
                     if config_entry.path().is_dir() {
                         s.spawn(|_| {
-                            let run = run_work(config_entry, version_name);
+                            let run = run_work(config_entry, version_name).unwrap();
+                            let save_to =
+                                save_to_root.join(format!("{}_{}.json", run.version, run.config));
+                            debug!("wrote run result to {:?}", save_to);
+                            File::create(&save_to)
+                                .unwrap()
+                                .write_all(&serde_json::to_vec(&run).unwrap())
+                                .unwrap();
                             results.lock().unwrap().push(run);
                         });
                     }
@@ -83,62 +89,22 @@ fn main() -> anyhow::Result<()> {
             }
         }
     });
-    let results = results.into_inner().unwrap();
+    let results = match results.into_inner() {
+        Ok(v) => v,
+        Err(e) => {
+            error!("{:?}", e);
+            e.into_inner()
+        }
+    };
 
-    let mut global_bp_max = f64::MIN;
-    let mut global_tp_max = f64::MIN;
-    let mut global_lat_max = f64::MIN;
-    let mut global_delay_max = f64::MIN;
-
-    let mut configs: HashMap<String, ConfigSummary> = HashMap::new();
-    for result in results {
-        let run = result?;
-        global_bp_max = global_bp_max.max(run.summary.backpressure.max);
-        global_tp_max = global_tp_max.max(run.summary.throughput.max);
-        global_lat_max = global_lat_max.max(run.summary.latency.max);
-
-        global_delay_max = global_delay_max.max(run.summary.recv.max);
-        global_delay_max = global_delay_max.max(run.summary.send.max);
-
-        let save_to = save_to_root.join(format!("{}_{}.json", run.version, run.config));
-        File::create(&save_to)?.write_all(&serde_json::to_vec(&run)?)?;
-        debug!("wrote run result to {:?}", save_to);
-
-        let config_summary = configs.entry(run.config.clone()).or_default();
-
-        config_summary.versions.push(run.version.clone());
-        config_summary.bp_max = config_summary.bp_max.max(run.summary.backpressure.max);
-        config_summary.tp_max = config_summary.tp_max.max(run.summary.throughput.max);
-        config_summary.lat_max = config_summary.lat_max.max(
-            *run.summary
-                .latency
-                .p99
-                .iter()
-                .max_by(|a, b| a.total_cmp(b))
-                .unwrap(),
-        );
-
-        config_summary.delay_max = config_summary.delay_max.max(
-            *run.summary
-                .send
-                .p99
-                .iter()
-                .max_by(|a, b| a.total_cmp(b))
-                .unwrap(),
-        );
-        config_summary.delay_max = config_summary.delay_max.max(
-            *run.summary
-                .recv
-                .p99
-                .iter()
-                .max_by(|a, b| a.total_cmp(b))
-                .unwrap(),
-        );
+    let mut summaries = vec![];
+    for run in results {
+        summaries.push((&run).into());
     }
     rayon::spawn(move || {
         File::create(save_to_root.join("summary.json"))
             .unwrap()
-            .write_all(&serde_json::to_vec(&Summary { configs }).unwrap())
+            .write_all(&serde_json::to_vec(&Summary { summaries }).unwrap())
             .unwrap()
     });
 
@@ -146,30 +112,71 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Default)]
 struct Summary {
-    configs: HashMap<String, ConfigSummary>,
+    summaries: Vec<RunSummary>,
 }
 
 /// This data is extremely specific to plotting the data
 /// and may not accurately reflect the field names.
 #[derive(Serialize, Deserialize, Debug)]
-struct ConfigSummary {
-    bp_max: f64,
-    tp_max: f64,
-    lat_max: f64,
-    delay_max: f64,
-    versions: Vec<String>,
+struct RunSummary {
+    version: String,
+    config: String,
+    backpressure: MetricSummary,
+    throughput: MetricSummary,
+    latency: MetricSummary,
+    recv: MetricSummary,
+    send: MetricSummary,
 }
 
-impl Default for ConfigSummary {
-    fn default() -> Self {
+impl From<&Run> for RunSummary {
+    fn from(run: &Run) -> Self {
         Self {
-            bp_max: f64::MIN,
-            tp_max: f64::MIN,
-            lat_max: f64::MIN,
-            delay_max: f64::MIN,
-            versions: vec![],
+            version: run.version.clone(),
+            config: run.config.clone(),
+            backpressure: (&run.summary.backpressure).into(),
+            throughput: (&run.summary.throughput).into(),
+            latency: (&run.summary.latency).into(),
+            recv: (&run.summary.recv).into(),
+            send: (&run.summary.send).into(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct MetricSummary {
+    max: f64,
+    mean: f64,
+    count: f64,
+
+    p50: Option<f64>,
+    p99: Option<f64>,
+    p999: Option<f64>,
+}
+
+impl From<&GaugeSummary> for MetricSummary {
+    fn from(summary: &GaugeSummary) -> Self {
+        Self {
+            max: summary.max,
+            mean: summary.values.iter().sum::<f64>() / summary.values.len() as f64,
+            count: summary.values.len() as f64,
+            p50: None,
+            p99: None,
+            p999: None,
+        }
+    }
+}
+
+impl From<&DistributionSummary> for MetricSummary {
+    fn from(summary: &DistributionSummary) -> Self {
+        Self {
+            max: summary.max,
+            mean: summary.mean,
+            count: summary.count as f64,
+            p50: Some(summary.overall_p50),
+            p99: Some(summary.overall_p99),
+            p999: Some(summary.overall_p999),
         }
     }
 }

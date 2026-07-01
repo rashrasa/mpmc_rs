@@ -319,12 +319,12 @@ def handle_config(config, agg_dir, output_dir, config_summary):
                 showarrow=False,
             )
 
-    fig.update_layout(hovermode="x unified", height=200 * n_rows)
+    fig.update_layout(hovermode="x unified", height=200 * n_rows, width=2560)
 
     out_path = output_dir / f"{config}.html"
     fig.write_html(out_path)
     print(f"wrote {out_path}")
-    out_path = output_dir / f"{config}.svg"
+    out_path = output_dir / f"{config}.jpg"
     fig.write_image(out_path)
     print(f"wrote {out_path}")
 

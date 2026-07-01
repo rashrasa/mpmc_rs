@@ -1,14 +1,13 @@
-use std::path::Path;
+use std::{collections::HashSet, path::Path, time::Instant};
 
 use anyhow::Context;
-use fast_time::Clock;
 
 use bench::{
     runner::MainBenchRunner,
     test::test_1::{self, run_bench_1},
 };
-use log::{error, info};
-use mpac_rs::{
+use log::{debug, error, info};
+use mpmc_rs::{
     external::CrossbeamMaker, v1::V1Maker, v2::V2Maker, v3::V3Maker, v4::V4Maker, v5::V5Maker,
 };
 
@@ -106,7 +105,7 @@ fn main() -> anyhow::Result<()> {
         version_descs.push(Version::V2("v2_vec_deque"));
     }
     if v3 {
-        version_descs.push(Version::V3("v3_lock_free_linked"));
+        version_descs.push(Version::V3("v3_locked_ends"));
     }
     if v4 {
         version_descs.push(Version::V4("v4_lock_free_array"));
@@ -119,52 +118,15 @@ fn main() -> anyhow::Result<()> {
     }
 
     // version names: tx_rx_sttl_rttl_size
-    let configs = vec![
-        (
-            "1_1_5_5_4",
-            test_1::Config {
-                n_sendrs: 1,
-                n_recvrs: 1,
-                sendrs_ttl_s: Some(5.0),
-                recvrs_ttl_s: Some(5.0),
-                make_payload: || 9u32,
-            },
-        ),
-        (
-            "3_6_5_5_4",
-            test_1::Config {
-                n_sendrs: 3,
-                n_recvrs: 6,
-                sendrs_ttl_s: Some(5.0),
-                recvrs_ttl_s: Some(5.0),
-                make_payload: || 9u32,
-            },
-        ),
-        (
-            "6_3_5_5_4",
-            test_1::Config {
-                n_sendrs: 6,
-                n_recvrs: 3,
-                sendrs_ttl_s: Some(5.0),
-                recvrs_ttl_s: Some(5.0),
-                make_payload: || 9u32,
-            },
-        ),
-        (
-            "7_7_5_5_4",
-            test_1::Config {
-                n_sendrs: 7,
-                n_recvrs: 7,
-                sendrs_ttl_s: Some(5.0),
-                recvrs_ttl_s: Some(5.0),
-                make_payload: || 9u32,
-            },
-        ),
-    ];
+    let mut configs = HashSet::new();
+
+    debug!("creating configs");
+    configs.extend(create_configs_ramping((1, 1), (7, 7), (3.0, 3.0), || 9u32));
+    configs.extend(create_configs_ramping((1, 2), (1, 7), (3.0, 3.0), || 9u32));
+    configs.extend(create_configs_ramping((2, 1), (7, 1), (3.0, 3.0), || 9u32));
 
     info!("Starting benchmark");
-    let mut clock = Clock::new();
-    let start = clock.now();
+    let start = Instant::now();
 
     let main_runner = MainBenchRunner::new(Path::new("output/result").to_path_buf());
 
@@ -178,7 +140,8 @@ fn main() -> anyhow::Result<()> {
             Version::Crossbeam(d) => d,
         };
         let runner = main_runner.spawn_runner(format!("version_{}", version_desc));
-        for (config_desc, config) in &configs {
+        for config in &configs {
+            let config_desc = &config.name;
             main_runner.reset_ids();
             info!(
                 "Starting {} tests with profile {}",
@@ -211,8 +174,43 @@ fn main() -> anyhow::Result<()> {
 
     info!(
         "Benchmarks completed. Ran for {}s",
-        start.elapsed(&mut clock).as_secs_f64()
+        start.elapsed().as_secs_f64()
     );
 
     Ok(())
+}
+
+/// start and end are (tx_count, rx_count)
+fn create_configs_ramping<T>(
+    start: (usize, usize),
+    end: (usize, usize),
+    ttl_s: (f64, f64),
+    make_payload: fn() -> T,
+) -> Vec<test_1::Config<T>> {
+    let size = std::mem::size_of::<T>();
+    let mut configs = vec![];
+    let mut tx = start.0;
+    let mut rx = start.1;
+    loop {
+        let name = format!("{}_{}_{}_{}_{}", tx, rx, ttl_s.0, ttl_s.1, size);
+        configs.push(test_1::Config {
+            name,
+            n_sendrs: tx,
+            n_recvrs: rx,
+            sendrs_ttl_s: Some(ttl_s.0),
+            recvrs_ttl_s: Some(ttl_s.1),
+            make_payload,
+        });
+        if tx == end.0 && rx == end.1 {
+            break;
+        }
+        if tx != end.0 {
+            tx += 1;
+        }
+        if rx != end.1 {
+            rx += 1;
+        }
+    }
+
+    configs
 }

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["bench", "mpac_rs", "examples/usage"]
+members = ["bench", "mpmc_rs", "examples/usage"]
 
 [profile.release]
 debug = true

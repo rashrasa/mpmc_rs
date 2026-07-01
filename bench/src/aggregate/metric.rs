@@ -53,7 +53,6 @@ pub enum DistributionMetric {
         min: f64,
         max: f64,
         mean: f64,
-        std_dev: f64,
         p50: f64,
         p90: f64,
         p95: f64,
@@ -61,6 +60,7 @@ pub enum DistributionMetric {
         p999: f64,
         p9999: f64,
         p99999: f64,
+        raw_values: Vec<f64>,
     },
 }
 
@@ -156,15 +156,13 @@ impl LazyWindowedMetric {
                 });
                 continue;
             }
+            bucket.values.retain(|v| !v.is_nan());
             bucket.values.sort_unstable_by(|a, b| a.total_cmp(b));
 
             let mut min = f64::INFINITY;
             let mut max = -f64::INFINITY;
 
-            let res = std_dev::standard_deviation(&bucket.values);
-
-            let mean = res.mean;
-            let std_dev = res.standard_deviation;
+            let mean = bucket.values.iter().sum::<f64>() / bucket.values.len() as f64;
 
             for v in bucket.values.iter() {
                 min = min.min(*v);
@@ -180,7 +178,6 @@ impl LazyWindowedMetric {
                 min,
                 max,
                 mean,
-                std_dev,
                 p50: percentile(&bucket.values, 0.5).context("failed to calculate p50")?,
                 p90: percentile(&bucket.values, 0.9).context("failed to calculate p90")?,
                 p95: percentile(&bucket.values, 0.95).context("failed to calculate p95")?,
@@ -189,17 +186,18 @@ impl LazyWindowedMetric {
                 p9999: percentile(&bucket.values, 0.9999).context("failed to calculate p9999")?,
                 p99999: percentile(&bucket.values, 0.99999)
                     .context("failed to calculate p99999")?,
+                raw_values: bucket.values.clone(),
             });
         }
         Ok(result)
     }
 
-    pub fn generate_gauged<F>(&self, mut agg: F) -> anyhow::Result<Vec<GaugeMetric>>
+    pub fn generate_gauged<F>(&mut self, mut agg: F) -> anyhow::Result<Vec<GaugeMetric>>
     where
-        F: FnMut(&mut f64, &f64),
+        F: FnMut(std::slice::Iter<f64>, &f64, &f64) -> f64,
     {
         let mut result = vec![];
-        for bucket in &self.buckets {
+        for bucket in &mut self.buckets {
             if bucket.values.is_empty() {
                 result.push(GaugeMetric::NoEvents {
                     start: bucket.start,
@@ -207,11 +205,9 @@ impl LazyWindowedMetric {
                 });
                 continue;
             }
+            bucket.values.retain(|v| !v.is_nan());
 
-            let mut value = 0.0;
-            for v in bucket.values.iter() {
-                agg(&mut value, v);
-            }
+            let value = agg(bucket.values.iter(), &self.start, &self.end);
 
             result.push(GaugeMetric::Gauge {
                 start: bucket.start,
@@ -300,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn lazy_windowed_metric_generate_correct() {
+    fn lazy_windowed_metric_one_bucket_generate_correct() {
         let mut metric = LazyWindowedMetric::new(250.0, 0.0, 1000.0);
         assert_eq!(4, metric.n_buckets);
 
@@ -320,7 +316,6 @@ mod tests {
                 min,
                 max,
                 mean,
-                std_dev,
                 p50,
                 p90,
                 p95,
@@ -328,7 +323,13 @@ mod tests {
                 p999,
                 p9999,
                 p99999,
+                raw_values,
             } => {
+                assert_relative_eq!(1.0, raw_values[0]);
+                assert_relative_eq!(4.0, raw_values[1]);
+                assert_relative_eq!(8.0, raw_values[2]);
+                assert_relative_eq!(9.0, raw_values[3]);
+
                 assert_eq!(4, *count);
                 assert_relative_eq!(0.0, *start, epsilon = F64_ACCEPTABLE_ERROR);
                 assert_relative_eq!(250.0, *end, epsilon = F64_ACCEPTABLE_ERROR);
@@ -337,7 +338,6 @@ mod tests {
                 assert_relative_eq!(9.0, *max, epsilon = F64_ACCEPTABLE_ERROR);
 
                 assert_relative_eq!(5.5, *mean, epsilon = F64_ACCEPTABLE_ERROR);
-                assert_relative_eq!(3.696_845_502_136, *std_dev, epsilon = F64_ACCEPTABLE_ERROR);
 
                 assert_relative_eq!(6.0, *p50, epsilon = F64_ACCEPTABLE_ERROR);
                 assert_relative_eq!(8.7, *p90, epsilon = F64_ACCEPTABLE_ERROR);

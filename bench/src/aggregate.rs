@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::aggregate::{
     ReconstructedEvent::{PartialReceiverEvent, PartialSenderEvent},
-    metric::{DistributionMetric, GaugeMetric, LazyWindowedMetric},
+    metric::{DistributionMetric, GaugeMetric, LazyWindowedMetric, percentile},
 };
 
 const BENCH_DATA_BIN_ROW_LENGTH: usize = 32;
@@ -34,12 +34,14 @@ pub struct Aggregation {
 #[derive(Serialize, Deserialize)]
 pub struct DistributionSummary {
     pub t: Vec<f64>,
+    pub mean: f64,
+    pub count: usize,
     pub p50: Vec<f64>,
-    pub p50_mean: f64,
+    pub overall_p50: f64,
     pub p99: Vec<f64>,
-    pub p99_mean: f64,
+    pub overall_p99: f64,
     pub p999: Vec<f64>,
-    pub p999_mean: f64,
+    pub overall_p999: f64,
     pub max: f64,
 }
 
@@ -253,9 +255,7 @@ impl Aggregation {
         }
 
         let tp = lazy_throughput
-            .generate_gauged(|a, b| {
-                *a += b;
-            })
+            .generate_gauged(|iter, start, end| iter.sum::<f64>() / (end - start))
             .context("failed to generate aggregation for throughput metric")?;
 
         let mut t_tp = Vec::with_capacity(tp.len());
@@ -270,7 +270,12 @@ impl Aggregation {
         }
 
         let bp = bp
-            .generate_gauged(|a, b| *a = a.max(*b))
+            .generate_gauged(|iter, _, _| {
+                *iter
+                    .min_by(|a, b| a.total_cmp(b))
+                    .context("unable to calculate min")
+                    .unwrap()
+            })
             .context("failed to generate backpressure metrics")?;
 
         let mut backpressure = Vec::with_capacity(bp.len());
@@ -299,6 +304,9 @@ impl Aggregation {
         let mut send_p99 = Vec::with_capacity(send.len());
         let mut send_p999 = Vec::with_capacity(send.len());
         let mut send_max = f64::MIN;
+        let mut send_mean = 0.0;
+        let mut send_count = 0;
+        let mut send_values = vec![];
         for metric in send {
             if let DistributionMetric::Distribution {
                 start,
@@ -306,6 +314,9 @@ impl Aggregation {
                 p99,
                 p999,
                 max,
+                mean,
+                count,
+                raw_values,
                 ..
             } = metric
             {
@@ -314,6 +325,10 @@ impl Aggregation {
                 send_p99.push(p99);
                 send_p999.push(p999);
                 send_max = send_max.max(max);
+                send_mean = (send_mean * send_count as f64 + mean * count as f64)
+                    / (send_count + count) as f64;
+                send_count += count;
+                send_values.extend(raw_values);
             }
         }
 
@@ -322,6 +337,9 @@ impl Aggregation {
         let mut recv_p99 = Vec::with_capacity(recv.len());
         let mut recv_p999 = Vec::with_capacity(recv.len());
         let mut recv_max = f64::MIN;
+        let mut recv_mean = 0.0;
+        let mut recv_count = 0;
+        let mut recv_values = vec![];
         for metric in recv {
             if let DistributionMetric::Distribution {
                 start,
@@ -329,6 +347,9 @@ impl Aggregation {
                 p99,
                 p999,
                 max,
+                mean,
+                count,
+                raw_values,
                 ..
             } = metric
             {
@@ -337,6 +358,10 @@ impl Aggregation {
                 recv_p99.push(p99);
                 recv_p999.push(p999);
                 recv_max = recv_max.max(max);
+                recv_mean = (recv_mean * (recv_count as f64) + mean * (count as f64))
+                    / (recv_count as f64 + count as f64);
+                recv_count += count;
+                recv_values.extend(raw_values);
             }
         }
 
@@ -345,6 +370,9 @@ impl Aggregation {
         let mut latency_p99 = Vec::with_capacity(latency.len());
         let mut latency_p999 = Vec::with_capacity(latency.len());
         let mut latency_max = f64::MIN;
+        let mut latency_mean = 0.0;
+        let mut latency_count = 0;
+        let mut latency_values = vec![];
         for metric in latency {
             if let DistributionMetric::Distribution {
                 start,
@@ -352,6 +380,9 @@ impl Aggregation {
                 p99,
                 p999,
                 max,
+                mean,
+                count,
+                raw_values,
                 ..
             } = metric
             {
@@ -360,8 +391,16 @@ impl Aggregation {
                 latency_p99.push(p99);
                 latency_p999.push(p999);
                 latency_max = latency_max.max(max);
+                latency_mean = (latency_mean * (latency_count as f64) + mean * (count as f64))
+                    / (latency_count as f64 + count as f64);
+                latency_count += count;
+                latency_values.extend(raw_values);
             }
         }
+
+        latency_values.sort_unstable_by(f64::total_cmp);
+        recv_values.sort_unstable_by(f64::total_cmp);
+        send_values.sort_unstable_by(f64::total_cmp);
 
         Ok(Aggregation {
             start,
@@ -371,9 +410,11 @@ impl Aggregation {
 
             latency: DistributionSummary {
                 t: t_lat,
-                p50_mean: latency_p50.iter().sum::<f64>() / latency_p50.len() as f64,
-                p99_mean: latency_p99.iter().sum::<f64>() / latency_p99.len() as f64,
-                p999_mean: latency_p999.iter().sum::<f64>() / latency_p999.len() as f64,
+                mean: latency_mean,
+                count: latency_count,
+                overall_p50: percentile(&latency_values, 0.5)?,
+                overall_p99: percentile(&latency_values, 0.99)?,
+                overall_p999: percentile(&latency_values, 0.999)?,
                 p50: latency_p50,
                 p99: latency_p99,
                 p999: latency_p999,
@@ -381,9 +422,11 @@ impl Aggregation {
             },
             send: DistributionSummary {
                 t: t_send,
-                p50_mean: send_p50.iter().sum::<f64>() / send_p50.len() as f64,
-                p99_mean: send_p99.iter().sum::<f64>() / send_p99.len() as f64,
-                p999_mean: send_p999.iter().sum::<f64>() / send_p999.len() as f64,
+                mean: send_mean,
+                count: send_count,
+                overall_p50: percentile(&send_values, 0.5)?,
+                overall_p99: percentile(&send_values, 0.99)?,
+                overall_p999: percentile(&send_values, 0.999)?,
                 p50: send_p50,
                 p99: send_p99,
                 p999: send_p999,
@@ -391,9 +434,11 @@ impl Aggregation {
             },
             recv: DistributionSummary {
                 t: t_recv,
-                p50_mean: recv_p50.iter().sum::<f64>() / recv_p50.len() as f64,
-                p99_mean: recv_p99.iter().sum::<f64>() / recv_p99.len() as f64,
-                p999_mean: recv_p999.iter().sum::<f64>() / recv_p999.len() as f64,
+                mean: recv_mean,
+                count: recv_count,
+                overall_p50: percentile(&recv_values, 0.5)?,
+                overall_p99: percentile(&recv_values, 0.99)?,
+                overall_p999: percentile(&recv_values, 0.999)?,
                 p50: recv_p50,
                 p99: recv_p99,
                 p999: recv_p999,

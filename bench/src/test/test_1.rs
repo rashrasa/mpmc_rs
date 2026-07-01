@@ -6,17 +6,32 @@ use std::{
 
 use anyhow::Context;
 use log::{debug, error};
-use mpac_rs::{BBlockingReceive, BBlockingSend, BChannelMaker};
+use mpmc_rs::{BBlockingReceive, BBlockingSend, BChannelMaker};
 
 use crate::runner::BenchRunner;
 
 #[derive(Clone)]
 pub struct Config<T> {
+    pub name: String,
     pub n_sendrs: usize,
     pub n_recvrs: usize,
     pub sendrs_ttl_s: Option<f64>,
     pub recvrs_ttl_s: Option<f64>,
     pub make_payload: fn() -> T,
+}
+
+impl<T> PartialEq for Config<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.n_sendrs == other.n_sendrs && self.n_recvrs == other.n_recvrs
+    }
+}
+impl<T> Eq for Config<T> {}
+
+impl<T> std::hash::Hash for Config<T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_usize(self.n_sendrs);
+        state.write_usize(self.n_recvrs);
+    }
 }
 
 struct Message<T> {

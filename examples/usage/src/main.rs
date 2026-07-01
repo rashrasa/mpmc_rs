@@ -1,9 +1,9 @@
 use std::{thread, time::Duration};
 
-use mpac_rs::{BlockingReceive, BlockingSend};
+use mpmc_rs::{BlockingReceive, BlockingSend};
 // wip
 fn main() {
-    let (tx, rx) = mpac_rs::channel();
+    let (tx, rx) = mpmc_rs::channel();
 
     thread::spawn(move || tx.send(5));
     thread::sleep(Duration::from_secs(1));

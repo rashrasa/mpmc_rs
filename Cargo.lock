@@ -102,7 +102,7 @@ dependencies = [
  "env_logger",
  "fast_time",
  "log",
- "mpac_rs",
+ "mpmc_rs",
  "rayon",
  "serde",
  "serde_json",
@@ -442,7 +442,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "88904434abc2901f197fe8cc55f0445e7ded921dba5911dad2e2b39b48e663c4"
 
 [[package]]
-name = "mpac_rs"
+name = "mpmc_rs"
 version = "0.1.0"
 dependencies = [
  "crossbeam",
@@ -921,7 +921,7 @@ checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
 name = "usage"
 version = "0.1.0"
 dependencies = [
- "mpac_rs",
+ "mpmc_rs",
 ]
 
 [[package]]
