@@ -4,7 +4,7 @@ from collections import defaultdict
 import pathlib as path
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import json
+import orjson
 import threading
 
 
@@ -288,7 +288,8 @@ def handle_config(config, agg_dir, output_dir, config_summary):
     )
 
     for i, version in enumerate(versions):
-        run = json.loads(open(agg_dir / f"{version}_{config}.json").read())["summary"]
+        with open(agg_dir / f"{version}_{config}.json") as f:
+            run = orjson.loads(f.read())["summary"]
         write_plots(i + 1, fig, run, config_summary, show_legend=(i == 0))
 
     annotations_to_add = []
@@ -323,14 +324,17 @@ def handle_config(config, agg_dir, output_dir, config_summary):
     out_path = output_dir / f"{config}.html"
     fig.write_html(out_path)
     print(f"wrote {out_path}")
+    out_path = output_dir / f"{config}.svg"
+    fig.write_image(out_path)
+    print(f"wrote {out_path}")
 
 
 def main():
     agg_dir = path.Path("output/aggregation")
     output_dir = path.Path("output/plots")
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    summary = json.loads(open(agg_dir / "summary.json").read())
+    with open(agg_dir / "summary.json") as f:
+        summary = orjson.loads(f.read())
     configs: dict = summary["configs"]
 
     threads: list[threading.Thread] = []
