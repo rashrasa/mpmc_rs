@@ -2,7 +2,7 @@ pub mod metric;
 
 use std::{
     fs::{File, read_dir},
-    io::{BufReader, ErrorKind::UnexpectedEof, Read},
+    io::{BufReader, Read},
     path::Path,
 };
 
@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::aggregate::{
     ReconstructedEvent::{PartialReceiverEvent, PartialSenderEvent},
-    metric::{DistributionMetric, GaugeMetric, LazyWindowedMetric, percentile},
+    metric::LazyWindowedMetric,
 };
 
 const BENCH_DATA_BIN_ROW_LENGTH: usize = 32;
@@ -148,81 +148,72 @@ impl Aggregation {
             let _ = rows.next();
 
             for row in rows {
-                match parse_row(row) {
-                    Ok((event_start, event_end, event_id, event_backpressure)) => {
-                        bp.add(event_backpressure as f64, event_end)?;
-                        if constructed_events.len() < event_id as usize + 1 {
-                            constructed_events
-                                .resize(event_id as usize + 1, ReconstructedEvent::Empty);
+                let (event_start, event_end, event_id, event_backpressure) = parse_row(row);
+                {
+                    bp.add(event_backpressure as f64, event_end)?;
+                    if constructed_events.len() < event_id as usize + 1 {
+                        constructed_events.resize(event_id as usize + 1, ReconstructedEvent::Empty);
+                    }
+                    let entry = &mut constructed_events[event_id as usize];
+                    match entry {
+                        PartialReceiverEvent {
+                            id,
+                            start_rx_s,
+                            end_rx_s,
+                        } => {
+                            if is_tx {
+                                *entry = ReconstructedEvent::ReconstructedEvent {
+                                    id: *id,
+                                    start_tx_s: event_start,
+                                    end_tx_s: event_end,
+                                    start_rx_s: *start_rx_s,
+                                    end_rx_s: *end_rx_s,
+                                }
+                            } else {
+                                return Err(anyhow::Error::msg(format!(
+                                    "id {id} already has a PartialReceiverEvent"
+                                )));
+                            }
                         }
-                        let entry = &mut constructed_events[event_id as usize];
-                        match entry {
-                            PartialReceiverEvent {
-                                id,
-                                start_rx_s,
-                                end_rx_s,
-                            } => {
-                                if is_tx {
-                                    *entry = ReconstructedEvent::ReconstructedEvent {
-                                        id: *id,
-                                        start_tx_s: event_start,
-                                        end_tx_s: event_end,
-                                        start_rx_s: *start_rx_s,
-                                        end_rx_s: *end_rx_s,
-                                    }
-                                } else {
-                                    return Err(anyhow::Error::msg(format!(
-                                        "id {id} already has a PartialReceiverEvent"
-                                    )));
+                        PartialSenderEvent {
+                            id,
+                            start_tx_s,
+                            end_tx_s,
+                        } => {
+                            if !is_tx {
+                                *entry = ReconstructedEvent::ReconstructedEvent {
+                                    id: *id,
+                                    start_tx_s: *start_tx_s,
+                                    end_tx_s: *end_tx_s,
+                                    start_rx_s: event_start,
+                                    end_rx_s: event_end,
                                 }
+                            } else {
+                                return Err(anyhow::Error::msg(format!(
+                                    "id {id} already has a PartialSenderEvent"
+                                )));
                             }
-                            PartialSenderEvent {
-                                id,
-                                start_tx_s,
-                                end_tx_s,
-                            } => {
-                                if !is_tx {
-                                    *entry = ReconstructedEvent::ReconstructedEvent {
-                                        id: *id,
-                                        start_tx_s: *start_tx_s,
-                                        end_tx_s: *end_tx_s,
-                                        start_rx_s: event_start,
-                                        end_rx_s: event_end,
-                                    }
-                                } else {
-                                    return Err(anyhow::Error::msg(format!(
-                                        "id {id} already has a PartialSenderEvent"
-                                    )));
-                                }
-                            }
-                            ReconstructedEvent::ReconstructedEvent { .. } => {
-                                unreachable!()
-                            }
+                        }
+                        ReconstructedEvent::ReconstructedEvent { .. } => {
+                            unreachable!()
+                        }
 
-                            ReconstructedEvent::Empty => {
-                                if is_tx {
-                                    *entry = PartialSenderEvent {
-                                        start_tx_s: event_start,
-                                        end_tx_s: event_end,
-                                        id: event_id,
-                                    };
-                                } else {
-                                    *entry = PartialReceiverEvent {
-                                        start_rx_s: event_start,
-                                        end_rx_s: event_end,
-                                        id: event_id,
-                                    };
-                                }
+                        ReconstructedEvent::Empty => {
+                            if is_tx {
+                                *entry = PartialSenderEvent {
+                                    start_tx_s: event_start,
+                                    end_tx_s: event_end,
+                                    id: event_id,
+                                };
+                            } else {
+                                *entry = PartialReceiverEvent {
+                                    start_rx_s: event_start,
+                                    end_rx_s: event_end,
+                                    id: event_id,
+                                };
                             }
                         }
                     }
-
-                    Err(err) => match err.kind() {
-                        UnexpectedEof => {
-                            break;
-                        }
-                        _ => return Err(anyhow::Error::from(err).context("error reading row")),
-                    },
                 }
             }
             file.unlock()
@@ -233,6 +224,7 @@ impl Aggregation {
         let mut lazy_recv_delay = LazyWindowedMetric::new(aggregation_period_s, start, end);
         let mut lazy_latency = LazyWindowedMetric::new(aggregation_period_s, start, end);
         let mut lazy_throughput = LazyWindowedMetric::new(aggregation_period_s, start, end);
+        let n_windows = lazy_send_delay.n_buckets();
 
         let mut empty = 0usize;
         for event in constructed_events {
@@ -272,22 +264,11 @@ impl Aggregation {
             warn!("found {} skipped event ids", empty);
         }
 
-        let tp = lazy_throughput
+        let throughput = lazy_throughput
             .generate_gauged(|iter, start, end| iter.sum::<f64>() / (end - start))
             .context("failed to generate aggregation for throughput metric")?;
 
-        let mut t_tp = Vec::with_capacity(tp.len());
-        let mut throughput = Vec::with_capacity(tp.len());
-        let mut tp_max = f64::MIN;
-        for metric in tp {
-            if let GaugeMetric::Gauge { start, value, .. } = metric {
-                t_tp.push(start);
-                throughput.push(value);
-                tp_max = tp_max.max(value);
-            }
-        }
-
-        let bp = bp
+        let backpressure = bp
             .generate_gauged(|iter, _, _| {
                 *iter
                     .min_by(|a, b| a.total_cmp(b))
@@ -295,17 +276,6 @@ impl Aggregation {
                     .unwrap()
             })
             .context("failed to generate backpressure metrics")?;
-
-        let mut backpressure = Vec::with_capacity(bp.len());
-        let mut t_bp = Vec::with_capacity(bp.len());
-        let mut max_bp = f64::MIN;
-        for metric in bp {
-            if let GaugeMetric::Gauge { value, start, .. } = metric {
-                t_bp.push(start);
-                backpressure.push(value);
-                max_bp = max_bp.max(value);
-            }
-        }
 
         let send = lazy_send_delay
             .generate()
@@ -317,172 +287,27 @@ impl Aggregation {
             .generate()
             .context("failed to generate aggregation for latency metric")?;
 
-        let mut t_send = Vec::with_capacity(send.len());
-        let mut send_p50 = Vec::with_capacity(send.len());
-        let mut send_p99 = Vec::with_capacity(send.len());
-        let mut send_p999 = Vec::with_capacity(send.len());
-        let mut send_max = f64::MIN;
-        let mut send_mean = 0.0;
-        let mut send_count = 0;
-        let mut send_values = Vec::with_capacity(send.len());
-        for metric in send {
-            if let DistributionMetric::Distribution {
-                start,
-                p50,
-                p99,
-                p999,
-                max,
-                mean,
-                count,
-                raw_values,
-                ..
-            } = metric
-            {
-                t_send.push(start);
-                send_p50.push(p50);
-                send_p99.push(p99);
-                send_p999.push(p999);
-                send_max = send_max.max(max);
-                send_mean = (send_mean * send_count as f64 + mean * count as f64)
-                    / (send_count + count) as f64;
-                send_count += count;
-                send_values.extend(raw_values);
-            }
-        }
-
-        let mut t_recv = Vec::with_capacity(recv.len());
-        let mut recv_p50 = Vec::with_capacity(recv.len());
-        let mut recv_p99 = Vec::with_capacity(recv.len());
-        let mut recv_p999 = Vec::with_capacity(recv.len());
-        let mut recv_max = f64::MIN;
-        let mut recv_mean = 0.0;
-        let mut recv_count = 0;
-        let mut recv_values = Vec::with_capacity(recv.len());
-        for metric in recv {
-            if let DistributionMetric::Distribution {
-                start,
-                p50,
-                p99,
-                p999,
-                max,
-                mean,
-                count,
-                raw_values,
-                ..
-            } = metric
-            {
-                t_recv.push(start);
-                recv_p50.push(p50);
-                recv_p99.push(p99);
-                recv_p999.push(p999);
-                recv_max = recv_max.max(max);
-                recv_mean = (recv_mean * (recv_count as f64) + mean * (count as f64))
-                    / (recv_count as f64 + count as f64);
-                recv_count += count;
-                recv_values.extend(raw_values);
-            }
-        }
-
-        let mut t_lat = Vec::with_capacity(latency.len());
-        let mut latency_p50 = Vec::with_capacity(latency.len());
-        let mut latency_p99 = Vec::with_capacity(latency.len());
-        let mut latency_p999 = Vec::with_capacity(latency.len());
-        let mut latency_max = f64::MIN;
-        let mut latency_mean = 0.0;
-        let mut latency_count = 0;
-        let mut latency_values = Vec::with_capacity(latency.len());
-        for metric in latency {
-            if let DistributionMetric::Distribution {
-                start,
-                p50,
-                p99,
-                p999,
-                max,
-                mean,
-                count,
-                raw_values,
-                ..
-            } = metric
-            {
-                t_lat.push(start);
-                latency_p50.push(p50);
-                latency_p99.push(p99);
-                latency_p999.push(p999);
-                latency_max = latency_max.max(max);
-                latency_mean = (latency_mean * (latency_count as f64) + mean * (count as f64))
-                    / (latency_count as f64 + count as f64);
-                latency_count += count;
-                latency_values.extend(raw_values);
-            }
-        }
-
-        latency_values.sort_unstable_by(f64::total_cmp);
-        recv_values.sort_unstable_by(f64::total_cmp);
-        send_values.sort_unstable_by(f64::total_cmp);
-
         Ok(Aggregation {
             start,
             end,
             aggregation_period_s,
-            n_windows: lazy_send_delay.n_buckets(),
+            n_windows,
 
-            latency: DistributionSummary {
-                t: t_lat,
-                mean: latency_mean,
-                count: latency_count,
-                overall_p50: percentile(&latency_values, 0.5)?,
-                overall_p99: percentile(&latency_values, 0.99)?,
-                overall_p999: percentile(&latency_values, 0.999)?,
-                p50: latency_p50,
-                p99: latency_p99,
-                p999: latency_p999,
-                max: latency_max,
-            },
-            send: DistributionSummary {
-                t: t_send,
-                mean: send_mean,
-                count: send_count,
-                overall_p50: percentile(&send_values, 0.5)?,
-                overall_p99: percentile(&send_values, 0.99)?,
-                overall_p999: percentile(&send_values, 0.999)?,
-                p50: send_p50,
-                p99: send_p99,
-                p999: send_p999,
-                max: send_max,
-            },
-            recv: DistributionSummary {
-                t: t_recv,
-                mean: recv_mean,
-                count: recv_count,
-                overall_p50: percentile(&recv_values, 0.5)?,
-                overall_p99: percentile(&recv_values, 0.99)?,
-                overall_p999: percentile(&recv_values, 0.999)?,
-                p50: recv_p50,
-                p99: recv_p99,
-                p999: recv_p999,
-                max: recv_max,
-            },
-            backpressure: GaugeSummary {
-                t: t_bp,
-                mean: backpressure.iter().sum::<f64>() / backpressure.len() as f64,
-                values: backpressure,
-                max: max_bp,
-            },
-            throughput: GaugeSummary {
-                t: t_tp,
-                mean: throughput.iter().sum::<f64>() / throughput.len() as f64,
-                values: throughput,
-                max: tp_max,
-            },
+            latency,
+            send,
+            recv,
+            backpressure,
+            throughput,
         })
     }
 }
 
-fn parse_row(row: &[u8; 32]) -> std::io::Result<(f64, f64, u64, u64)> {
-    Ok((
-        f64::from_le_bytes(row[0..8].try_into().expect("conversion failed")),
-        f64::from_le_bytes(row[8..16].try_into().expect("conversion failed")),
-        u64::from_le_bytes(row[16..24].try_into().expect("conversion failed")),
-        u64::from_le_bytes(row[24..32].try_into().expect("conversion failed")),
-    ))
+fn parse_row(row: &[u8; 32]) -> (f64, f64, u64, u64) {
+    let row = row.as_chunks::<8>().0;
+    (
+        f64::from_le_bytes(row[0]),
+        f64::from_le_bytes(row[1]),
+        u64::from_le_bytes(row[2]),
+        u64::from_le_bytes(row[3]),
+    )
 }

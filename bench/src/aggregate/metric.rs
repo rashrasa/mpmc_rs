@@ -1,6 +1,8 @@
 use anyhow::{Context, anyhow};
 use serde::{Deserialize, Serialize};
 
+use crate::aggregate::{DistributionSummary, GaugeSummary};
+
 /// Calculates the `p*100`-th percentile of `sorted_values`.
 ///
 /// Values must already be sorted.
@@ -104,7 +106,7 @@ impl LazyWindowedMetric {
             buckets.push(LazyWindowedMetricBucket {
                 start: t,
                 end: t + period,
-                values: Vec::with_capacity(10_000),
+                values: Vec::with_capacity(1_000_000),
             });
             t += period;
         }
@@ -146,81 +148,84 @@ impl LazyWindowedMetric {
         Ok(())
     }
 
-    /// Excludes final bucket
-    pub fn generate(&mut self) -> anyhow::Result<Vec<DistributionMetric>> {
-        let mut result = vec![];
-        for bucket in self.buckets.iter_mut().take(1.max(self.n_buckets - 1)) {
+    /// Consumes self and creates a distribution.
+    pub fn generate(self) -> anyhow::Result<DistributionSummary> {
+        let mut t = vec![];
+        let mut p50 = vec![];
+        let mut p99 = vec![];
+        let mut p999 = vec![];
+        let mut max = f64::MIN;
+        let mut sum = 0.0;
+        let mut count = 0;
+        let mut values = vec![];
+
+        for mut bucket in self.buckets {
             if bucket.values.is_empty() {
-                result.push(DistributionMetric::NoEvents {
-                    start: bucket.start,
-                    end: bucket.end,
-                });
                 continue;
             }
-            bucket.values.retain(|v| !v.is_nan());
-            bucket.values.sort_unstable_by(|a, b| a.total_cmp(b));
+            bucket.values.sort_unstable_by(f64::total_cmp);
 
-            let mut min = f64::INFINITY;
-            let mut max = -f64::INFINITY;
+            t.push(bucket.start);
+            p50.push(percentile(&bucket.values, 0.5).context("failed to calculate p50")?);
+            p99.push(percentile(&bucket.values, 0.99).context("failed to calculate p99")?);
+            p999.push(percentile(&bucket.values, 0.999).context("failed to calculate p999")?);
 
-            let mean = bucket.values.iter().sum::<f64>() / bucket.values.len() as f64;
-
+            count += bucket.values.len();
             for v in bucket.values.iter() {
-                min = min.min(*v);
-                max = max.max(*v);
+                let v = *v;
+                max = max.max(v);
+                sum += v;
             }
-
-            result.push(DistributionMetric::Distribution {
-                start: bucket.start,
-                end: bucket.end,
-
-                count: bucket.values.len(),
-
-                min,
-                max,
-                mean,
-                p50: percentile(&bucket.values, 0.5).context("failed to calculate p50")?,
-                p90: percentile(&bucket.values, 0.9).context("failed to calculate p90")?,
-                p95: percentile(&bucket.values, 0.95).context("failed to calculate p95")?,
-                p99: percentile(&bucket.values, 0.99).context("failed to calculate p99")?,
-                p999: percentile(&bucket.values, 0.999).context("failed to calculate p999")?,
-                p9999: percentile(&bucket.values, 0.9999).context("failed to calculate p9999")?,
-                p99999: percentile(&bucket.values, 0.99999)
-                    .context("failed to calculate p99999")?,
-                raw_values: bucket.values.clone(),
-            });
+            values.extend(bucket.values)
         }
-        Ok(result)
+        values.sort_unstable_by(f64::total_cmp);
+        let mean = sum / count as f64;
+        let overall_p50 = percentile(&values, 0.5)?;
+        let overall_p99 = percentile(&values, 0.5)?;
+        let overall_p999 = percentile(&values, 0.5)?;
+        Ok(DistributionSummary {
+            t,
+            mean,
+            count,
+            p50,
+            overall_p50,
+            p99,
+            overall_p99,
+            p999,
+            overall_p999,
+            max,
+        })
     }
 
-    /// Excludes final bucket
-    pub fn generate_gauged<F>(&mut self, mut agg: F) -> anyhow::Result<Vec<GaugeMetric>>
+    /// Consumes self and creates a gauge summary.
+    pub fn generate_gauged<F>(self, mut agg: F) -> anyhow::Result<GaugeSummary>
     where
         F: FnMut(std::slice::Iter<f64>, &f64, &f64) -> f64,
     {
-        let mut result = vec![];
-        for bucket in self.buckets.iter_mut().take(1.max(self.n_buckets - 1)) {
+        let mut values = vec![];
+        let mut t = vec![];
+        let mut max = f64::MIN;
+        let mut sum = 0.0;
+        let mut count = 0;
+        for bucket in self.buckets {
             if bucket.values.is_empty() {
-                result.push(GaugeMetric::NoEvents {
-                    start: bucket.start,
-                    end: bucket.end,
-                });
                 continue;
             }
-            bucket.values.retain(|v| !v.is_nan());
 
             let value = agg(bucket.values.iter(), &bucket.start, &bucket.end);
-
-            result.push(GaugeMetric::Gauge {
-                start: bucket.start,
-                end: bucket.end,
-
-                count: bucket.values.len(),
-
-                value: value / self.period,
-            });
+            values.push(value);
+            t.push(bucket.start);
+            sum += value;
+            max = max.max(value);
+            count += 1;
         }
-        Ok(result)
+        let mean = sum / count as f64;
+        Ok(GaugeSummary {
+            t,
+            values,
+            mean,
+            max,
+        })
     }
 
     pub fn n_buckets(&self) -> usize {
@@ -307,48 +312,7 @@ mod tests {
         metric.add(8.0, 150.0).unwrap();
         metric.add(9.0, 249.999_999_999_999).unwrap();
 
-        let result = &metric.generate().unwrap()[0];
-
-        match result {
-            DistributionMetric::NoEvents { .. } => panic!("no events in this bucket"),
-            DistributionMetric::Distribution {
-                start,
-                end,
-                count,
-                min,
-                max,
-                mean,
-                p50,
-                p90,
-                p95,
-                p99,
-                p999,
-                p9999,
-                p99999,
-                raw_values,
-            } => {
-                assert_relative_eq!(1.0, raw_values[0]);
-                assert_relative_eq!(4.0, raw_values[1]);
-                assert_relative_eq!(8.0, raw_values[2]);
-                assert_relative_eq!(9.0, raw_values[3]);
-
-                assert_eq!(4, *count);
-                assert_relative_eq!(0.0, *start, epsilon = F64_ACCEPTABLE_ERROR);
-                assert_relative_eq!(250.0, *end, epsilon = F64_ACCEPTABLE_ERROR);
-
-                assert_relative_eq!(1.0, *min, epsilon = F64_ACCEPTABLE_ERROR);
-                assert_relative_eq!(9.0, *max, epsilon = F64_ACCEPTABLE_ERROR);
-
-                assert_relative_eq!(5.5, *mean, epsilon = F64_ACCEPTABLE_ERROR);
-
-                assert_relative_eq!(6.0, *p50, epsilon = F64_ACCEPTABLE_ERROR);
-                assert_relative_eq!(8.7, *p90, epsilon = F64_ACCEPTABLE_ERROR);
-                assert_relative_eq!(8.85, *p95, epsilon = F64_ACCEPTABLE_ERROR);
-                assert_relative_eq!(8.97, *p99, epsilon = F64_ACCEPTABLE_ERROR);
-                assert_relative_eq!(8.997, *p999, epsilon = F64_ACCEPTABLE_ERROR);
-                assert_relative_eq!(8.9997, *p9999, epsilon = F64_ACCEPTABLE_ERROR);
-                assert_relative_eq!(8.99997, *p99999, epsilon = F64_ACCEPTABLE_ERROR);
-            }
-        }
+        let _result = &metric.generate().unwrap();
+        todo!()
     }
 }
