@@ -18,7 +18,9 @@ fn main() -> anyhow::Result<()> {
         .target(env_logger::Target::Stdout)
         .filter_level(log::LevelFilter::Debug)
         .init();
+    // we are IO-bound
     ThreadPoolBuilder::new()
+        .num_threads(48)
         .build_global()
         .context("unable to build thread pool")?;
     let path = std::env::args()

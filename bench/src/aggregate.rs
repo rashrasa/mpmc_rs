@@ -108,7 +108,7 @@ impl Aggregation {
             }
         }
         // event numbers start from 0 and go up by 1, we can just use a cheap vec
-        let mut constructed_events: Vec<ReconstructedEvent> = Vec::with_capacity(estimated_len);
+        let mut constructed_events: Vec<ReconstructedEvent> = Vec::with_capacity(estimated_len / 2);
 
         let mut bp = LazyWindowedMetric::new(aggregation_period_s, start, end);
 

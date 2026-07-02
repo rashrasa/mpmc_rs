@@ -106,7 +106,7 @@ impl LazyWindowedMetric {
             buckets.push(LazyWindowedMetricBucket {
                 start: t,
                 end: t + period,
-                values: Vec::with_capacity(1_000_000),
+                values: vec![],
             });
             t += period;
         }
