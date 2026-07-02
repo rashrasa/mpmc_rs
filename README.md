@@ -36,23 +36,31 @@ Went from `400.32s` with the initial implementation,
 
 down to `8.98s` (`44.6x` speedup) with all optimizations.
 
-**Speedup 1**: Time down to `305.34s`
+#### Speedup 1: Lazy Errors in Hot Loops
+
+Time down to `305.34s`
 
 - Lazily evaluating error string in `LazyWindowedMetric::add` on Option value (using `ok_or_else` instead of `ok_or`) in hot loop
 
-**Speedup 2**: Time down to `94.60s`
+#### Speedup 2: Sorting at the End Instead of Inserting in Sorted Order
+
+Time down to `94.60s`
 
 - Sorting aggregation bucket values lazily in `LazyWindowedMetric::generate` 
 - Meaning there are no more inserts inside each bucket, only pushes at their ends
 - No longer using sorted values in `LazyWindowedMetric::generate_gauged` (was only necessary to find percentiles)
 
-**Speedup 3**: Time down to `29.70s`
+#### Speedup 3: Lists instead of Hashmaps
 
-- Vec instead of HashMap for u64 keys
+Time down to `29.70s`
+
+- `Vec` instead of `HashMap` for `u64` keys
     - Had to update benchmark runner to reset event ids to 0 for each run
-- Estimating number of events by summing file sizes then pre-allocating entire vec at the start
+- Estimating number of events by summing file sizes then pre-allocating entire `Vec` at the start
 
-**Speedup 4**, Multithreading, Time down to `8.98s`
+#### Speedup 4: Multithreading
+
+Time down to `8.98s`
 
 - Spawned a thread for each run (version/config pair)
 
@@ -60,13 +68,25 @@ down to `8.98s` (`44.6x` speedup) with all optimizations.
 
 - `101 GB` of raw benchmark data
 
-Hyperfine initial result (3 warmups, 10 runs): 
+`hyperfine` initial result (3 warmups, 10 runs): 
 
 - Mean: `304s`
 - Standard deviation: `160s` (very high!)
 - Range: `176s --- 583s`
 - User Time: `142s`
 - System Time: `125s`
+
+#### Speedup 1: Memory-Mapped Raw Benchmark Data
+
+- Every raw benchmark binary data file was memory-mapped (using crate `memmap2`)
+
+`hyperfine` result (3 warmups, 10 runs): 
+
+- Mean: `140s` (**2.2x improvement**)
+- Standard deviation: `70s`
+- Range: `71s --- 277s`
+- User Time: `199s`
+- System Time: `154s`
 
 ## Benchmark
 
@@ -76,7 +96,7 @@ Each event contains:
 
 - Start time
 - End time
-- Id
+- ID
 - Backpressure
 
 After the benchmark is run, events recorded by senders are matched with ones from receivers and an aggregation is run across all complete and partial (sender/receiver half only) event data.

@@ -9,12 +9,11 @@ use std::{
 
 use anyhow::Context;
 use bench::aggregate::{Aggregation, DistributionSummary, GaugeSummary};
-use log::{debug, error};
+use log::{debug, error, info};
 use rayon::ThreadPoolBuilder;
 use serde::{Deserialize, Serialize};
 
 fn main() -> anyhow::Result<()> {
-    let start = Instant::now();
     env_logger::builder()
         .target(env_logger::Target::Stdout)
         .filter_level(log::LevelFilter::Debug)
@@ -26,6 +25,30 @@ fn main() -> anyhow::Result<()> {
         .nth(1)
         .ok_or(anyhow::Error::msg("expected a path argument"))?;
 
+    if std::env::args()
+        .find(|v| v.eq_ignore_ascii_case("unsafe"))
+        .is_none()
+    {
+        let mut answer = String::new();
+        println!(
+            "\n\n\n\x1b[31mPlease confirm that all files in {} will not be accessed for the duration of the run.",
+            path
+        );
+        println!(
+            "This application uses file memory-mapping and modifying files while it's running may result in undefined behaviour."
+        );
+        print!("Do you confirm (Y/n)?: \x1b[0m");
+        std::io::stdout().flush()?;
+
+        std::io::stdin()
+            .read_line(&mut answer)
+            .expect("Invalid input.");
+        if !answer.to_ascii_lowercase().starts_with("y") {
+            return Ok(());
+        }
+    }
+    info!("started");
+    let start = Instant::now();
     let path = Path::new(&path).to_path_buf();
 
     if !fs::exists(&path).context(format!("could not check for the existence of {path:?}"))? {
@@ -74,7 +97,9 @@ fn main() -> anyhow::Result<()> {
                     let version_name = version_name.clone();
                     if config_entry.path().is_dir() {
                         s.spawn(|_| {
-                            let run = run_work(config_entry, version_name).unwrap();
+                            // Safety: We printed a bright red warning that all files in this config's directory
+                            // is to be accessed and the user has provided a confirmation.
+                            let run = unsafe { run_work(config_entry, version_name) }.unwrap();
                             let save_to =
                                 save_to_root.join(format!("{}_{}.json", run.version, run.config));
                             debug!("wrote run result to {:?}", save_to);
@@ -181,7 +206,10 @@ impl From<&DistributionSummary> for MetricSummary {
     }
 }
 
-fn run_work(config_entry: DirEntry, version_name: String) -> anyhow::Result<Run> {
+/// # Safety
+///
+/// No other processes should be able to access any file in this config's directory.
+unsafe fn run_work(config_entry: DirEntry, version_name: String) -> anyhow::Result<Run> {
     let config_path = config_entry.path();
     if !config_path.is_dir() {
         Err(anyhow::Error::msg("not a valid directory"))
@@ -195,20 +223,22 @@ fn run_work(config_entry: DirEntry, version_name: String) -> anyhow::Result<Run>
             )))?;
         let config_name = config_path_str.replace("config_", "");
 
-        let summary = Aggregation::from_directory(
-            &config_path,
-            format!(
-                "{}.bin",
-                config_path
-                    .clone()
-                    .into_string()
-                    .map_err(|_| anyhow::Error::msg(format!(
-                        "could not transform {:?} into string",
-                        config_path
-                    )))?
-            ),
-            0.25,
-        )
+        let summary = unsafe {
+            Aggregation::from_directory(
+                &config_path,
+                format!(
+                    "{}.bin",
+                    config_path
+                        .clone()
+                        .into_string()
+                        .map_err(|_| anyhow::Error::msg(format!(
+                            "could not transform {:?} into string",
+                            config_path
+                        )))?
+                ),
+                0.25,
+            )
+        }
         .context(format!(
             "could not run aggregation for version \"{}\" config \"{}\"",
             version_name, config_name

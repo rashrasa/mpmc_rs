@@ -8,6 +8,7 @@ use std::{
 
 use anyhow::Context;
 use log::warn;
+use memmap2::Mmap;
 use serde::{Deserialize, Serialize};
 
 use crate::aggregate::{
@@ -77,7 +78,11 @@ pub enum ReconstructedEvent {
 
 impl Aggregation {
     /// expects directory to include tx_runner_n and rx_runner_n files only
-    pub fn from_directory(
+    ///
+    /// # Safety
+    ///
+    /// Must confirm that no other processes read/write to any file in the provided run_path.
+    pub unsafe fn from_directory(
         run_path: impl AsRef<Path>,
         run_bin_path: impl AsRef<Path>,
         aggregation_period_s: f64,
@@ -124,15 +129,26 @@ impl Aggregation {
                     continue;
                 }
             };
-            let file = File::open(entry.path())?;
 
-            let mut file = BufReader::new(file);
+            let path = entry.path();
+            let file = File::open(&path)?;
+            file.lock()
+                .context(format!("could not lock file at {:?}", path))?;
 
+            // Safety:
+            // - A (potentially non-mandatory) lock on the current file is held.
+            // - Safety confirmation propogated up to client of this library.
+            let m_mapped_file = unsafe { Mmap::map(&file) }
+                .context(format!("could not memory-map file at {:?}", path))?;
+            let mut rows = m_mapped_file
+                .as_chunks::<BENCH_DATA_BIN_ROW_LENGTH>()
+                .0
+                .iter();
             // discard header row
-            let _ = next_binary_row(&mut file)?;
+            let _ = rows.next();
 
-            loop {
-                match next_binary_row(&mut file) {
+            for row in rows {
+                match parse_row(row) {
                     Ok((event_start, event_end, event_id, event_backpressure)) => {
                         bp.add(event_backpressure as f64, event_end)?;
                         if constructed_events.len() < event_id as usize + 1 {
@@ -209,6 +225,8 @@ impl Aggregation {
                     },
                 }
             }
+            file.unlock()
+                .context(format!("could not unlock file at {:?}", path))?;
         }
 
         let mut lazy_send_delay = LazyWindowedMetric::new(aggregation_period_s, start, end);
@@ -306,7 +324,7 @@ impl Aggregation {
         let mut send_max = f64::MIN;
         let mut send_mean = 0.0;
         let mut send_count = 0;
-        let mut send_values = vec![];
+        let mut send_values = Vec::with_capacity(send.len());
         for metric in send {
             if let DistributionMetric::Distribution {
                 start,
@@ -339,7 +357,7 @@ impl Aggregation {
         let mut recv_max = f64::MIN;
         let mut recv_mean = 0.0;
         let mut recv_count = 0;
-        let mut recv_values = vec![];
+        let mut recv_values = Vec::with_capacity(recv.len());
         for metric in recv {
             if let DistributionMetric::Distribution {
                 start,
@@ -372,7 +390,7 @@ impl Aggregation {
         let mut latency_max = f64::MIN;
         let mut latency_mean = 0.0;
         let mut latency_count = 0;
-        let mut latency_values = vec![];
+        let mut latency_values = Vec::with_capacity(latency.len());
         for metric in latency {
             if let DistributionMetric::Distribution {
                 start,
@@ -460,39 +478,11 @@ impl Aggregation {
     }
 }
 
-fn next_binary_row(mut r: impl Read) -> std::io::Result<(f64, f64, u64, u64)> {
-    let mut header_buf = [0u8; 32];
-    r.read_exact(&mut header_buf)?;
-    let mut chunks = header_buf.chunks_exact(8);
-
+fn parse_row(row: &[u8; 32]) -> std::io::Result<(f64, f64, u64, u64)> {
     Ok((
-        f64::from_le_bytes(
-            chunks
-                .next()
-                .expect("chunks did not yield first element")
-                .try_into()
-                .expect("conversion failed"),
-        ),
-        f64::from_le_bytes(
-            chunks
-                .next()
-                .expect("chunks did not yield second element")
-                .try_into()
-                .expect("conversion failed"),
-        ),
-        u64::from_le_bytes(
-            chunks
-                .next()
-                .expect("chunks did not yield third element")
-                .try_into()
-                .expect("conversion failed"),
-        ),
-        u64::from_le_bytes(
-            chunks
-                .next()
-                .expect("chunks did not yield third element")
-                .try_into()
-                .expect("conversion failed"),
-        ),
+        f64::from_le_bytes(row[0..8].try_into().expect("conversion failed")),
+        f64::from_le_bytes(row[8..16].try_into().expect("conversion failed")),
+        u64::from_le_bytes(row[16..24].try_into().expect("conversion failed")),
+        u64::from_le_bytes(row[24..32].try_into().expect("conversion failed")),
     ))
 }
